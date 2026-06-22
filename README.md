@@ -127,6 +127,16 @@ Fetches `http://<host>:<port>/data/aircraft.json` every 2 seconds. Expected form
 
 Aircraft without `lat`/`lon` are skipped automatically.
 
+## Land mask
+
+A pre-generated land outline is included in `src/land_mask.h` (centered on Adelaide, 40 NM range). To regenerate for your location:
+
+1. Open [`tools/land_mask_map.html`](tools/land_mask_map.html) in a browser
+2. Enter your home lat/lon and range → **Update Map**
+3. **Download land_mask.h** → drop it into `src/`
+
+No dependencies — generates the C header directly in the browser.
+
 ## Troubleshooting
 
 | Issue | Fix |

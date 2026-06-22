@@ -2,34 +2,155 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Radar Land Mask</title>
+<title>Radar Land Mask Generator</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#000; display:flex; flex-direction:column; align-items:center;
+  body { background:#111; display:flex; flex-direction:column; align-items:center;
          font-family:monospace; color:#ccc; }
-  h2 { margin:12px 0 8px; font-size:14px; }
-  p  { margin:0 0 12px; font-size:11px; color:#888; }
-  #map { width:480px; height:480px; }
+  h2 { margin:12px 0 4px; font-size:15px; }
+  p  { margin:0 0 8px; font-size:11px; color:#888; }
+  .controls { display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap; justify-content:center; }
+  .controls label { font-size:11px; color:#aaa; }
+  .controls input { width:100px; padding:3px 5px; font-size:11px; background:#222; color:#fff;
+                     border:1px solid #444; border-radius:3px; font-family:monospace; }
+  #map { width:480px; height:480px; border:1px solid #333; background:#181818; }
+  .leaflet-tile { outline:none; border:0; }
+  button { padding:6px 14px; font-size:12px; cursor:pointer; background:#2a6; color:#fff;
+           border:none; border-radius:4px; font-family:monospace; }
+  button:hover { background:#3c8; }
+  button:disabled { background:#444; cursor:wait; }
+  .status { font-size:11px; color:#aaa; margin-top:4px; min-height:16px; }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
 
-<h2>Radar Land Mask</h2>
-<p>Screenshot → <code>python3 tools/png_to_land.py map.png &gt; src/land_mask.h</code></p>
+<h2>Radar Land Mask Generator</h2>
+<p>Set your home position, review the map, then download land_mask.h.</p>
+
+<div class="controls">
+  <label>Lat: <input id="latInput" type="number" step="any" value="-34.9285"></label>
+  <label>Lon: <input id="lonInput" type="number" step="any" value="138.6007"></label>
+  <label>Range (NM): <input id="rangeInput" type="number" step="1" value="40" style="width:60px"></label>
+  <button id="updateBtn">Update Map</button>
+  <button id="downloadBtn">Download land_mask.h</button>
+</div>
 <div id="map"></div>
+<div class="status" id="status"></div>
+<p style="margin-top:10px">Move the downloaded file to <code>src/land_mask.h</code></p>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script>
-  /** Fill in your lat/lng here **/
-  const HOME_LAT = -34.9285;
-  const HOME_LON =  138.6007;
+  let map;
 
-  const dLat = 40 / 60.04;
-  const dLon = 40 / (60.04 * Math.cos(HOME_LAT * Math.PI / 180));
-  const bounds = [[HOME_LAT - dLat, HOME_LON - dLon], [HOME_LAT + dLat, HOME_LON + dLon]];
-  const map = L.map('map', { zoomControl:false, attributionControl:false }).fitBounds(bounds);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', { maxZoom:19 }).addTo(map);
+  function initMap(lat, lon, rangeNm) {
+    const dLat = rangeNm / 60.04;
+    const dLon = rangeNm / (60.04 * Math.cos(lat * Math.PI / 180));
+    const bounds = [[lat - dLat, lon - dLon], [lat + dLat, lon + dLon]];
+
+    if (map) { map.remove(); }
+    map = L.map('map', { zoomControl:false, attributionControl:false }).fitBounds(bounds);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19
+    }).addTo(map);
+  }
+
+  function update() {
+    const lat  = parseFloat(document.getElementById('latInput').value);
+    const lon  = parseFloat(document.getElementById('lonInput').value);
+    const range = parseFloat(document.getElementById('rangeInput').value);
+    initMap(lat, lon, range);
+  }
+
+  function setStatus(msg) { document.getElementById('status').textContent = msg; }
+
+  async function downloadHeader() {
+    const btn = document.getElementById('downloadBtn');
+    btn.disabled = true;
+    setStatus('Rendering map...');
+
+    await new Promise(r => setTimeout(r, 800));
+
+    try {
+      const mapEl = document.getElementById('map');
+      const canvas = await html2canvas(mapEl, {
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: '#000000',
+        width: 480,
+        height: 480,
+        scale: 1
+      });
+
+      setStatus('Generating land_mask.h...');
+
+      // Read pixel data and classify land vs water
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.getImageData(0, 0, 480, 480);
+      const pixels = imgData.data; // [r,g,b,a, r,g,b,a, ...]
+
+      const W = 480, H = 480, SIZE = W * H * 2;
+      const buf = new Uint8Array(new ArrayBuffer(SIZE));
+      let off = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+        if (r + g + b < 20) {
+          buf[off++] = 0x00; buf[off++] = 0x00;  // water
+        } else {
+          buf[off++] = 0x02; buf[off++] = 0x01;  // land (#002210 → RGB565 0x0102, LE bytes)
+        }
+      }
+
+      // Build C header text
+      let lines = [];
+      lines.push('/* Auto-generated land mask — tool at tools/land_mask_map.html */');
+      lines.push(`/* ${W}x${H} pixels, RGB565 format */`);
+      lines.push('#pragma once');
+      lines.push('#include <stdint.h>');
+      lines.push('');
+      lines.push(`#define LAND_MASK_W ${W}`);
+      lines.push(`#define LAND_MASK_H ${H}`);
+      lines.push(`#define LAND_MASK_SIZE ${SIZE}`);
+      lines.push('');
+      lines.push('/* 0x0000 = water (transparent), 0x0102 = land (#002210) */');
+      lines.push(`static const uint8_t land_mask_rgb565[${SIZE}] = {`);
+
+      for (let i = 0; i < SIZE; i += 16) {
+        const chunk = Array.from(buf.slice(i, i + 16));
+        lines.push('    ' + chunk.map(b => '0x' + b.toString(16).padStart(2, '0')).join(', ') + ',');
+      }
+      lines.push('};');
+      lines.push('');
+
+      // Trigger download
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'land_mask.h';
+      a.click();
+      URL.revokeObjectURL(url);
+
+      setStatus('Downloaded land_mask.h (' + (SIZE / 1024).toFixed(0) + ' KB)');
+      btn.disabled = false;
+
+    } catch (e) {
+      setStatus('Error: ' + e.message);
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById('updateBtn').addEventListener('click', update);
+  document.getElementById('downloadBtn').addEventListener('click', downloadHeader);
+
+  // Enter key triggers update from any input
+  document.querySelectorAll('.controls input').forEach(input => {
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') update(); });
+  });
+
+  // Initial load
+  update();
 </script>
 </body>
 </html>
