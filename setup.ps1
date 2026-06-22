@@ -1,7 +1,12 @@
 # Setup script for Windows
-# Creates symlinks for shared sources. Run once after cloning.
+# Creates symlinks for shared sources (optional — for IDE code intelligence).
+# The PlatformIO build works without these via radar/extra_src.py.
 # Requires Developer Mode (Settings > Update & Security > For Developers)
 # or run PowerShell as Administrator.
+#
+# Run once after cloning:
+#   .\setup.ps1           # symlinks (needs Admin or Developer Mode)
+#   .\setup.ps1 -Copy     # copies instead (no privileges needed)
 
 param(
     [switch]$Copy  # Use copy instead of symlinks (if Developer Mode is off)
@@ -23,7 +28,7 @@ $files = @(
 )
 
 foreach ($f in $files) {
-    $target = "..\..\$sharedDir\$f"
+    $target = "$sharedDir\$f"
     $link   = "$srcDir\$f"
 
     if (Test-Path $link) { Remove-Item $link -Force }
@@ -38,7 +43,7 @@ foreach ($f in $files) {
 }
 
 # Font
-$fontTarget = "..\..\$sharedDir\fonts\lv_font_monoid_12.c"
+$fontTarget = "$sharedDir\fonts\lv_font_monoid_12.c"
 $fontLink   = "$srcDir\lv_font_monoid_12.c"
 if (Test-Path $fontLink) { Remove-Item $fontLink -Force }
 if ($Copy) {
@@ -50,7 +55,7 @@ Write-Host "  linked: $fontLink -> $fontTarget"
 
 Write-Host ""
 Write-Host "==> Setup complete." -ForegroundColor Green
-Write-Host "    Build:  cd radar && pio run"
-Write-Host "    Flash:  cd radar && pio run --target upload"
+Write-Host "    Build:  cd radar; pio run"
+Write-Host "    Flash:  cd radar; pio run --target upload"
 Write-Host ""
 Write-Host "    If symlinks failed, retry as Administrator or use: .\setup.ps1 -Copy"

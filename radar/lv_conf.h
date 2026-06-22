@@ -16,7 +16,7 @@
 /*──────────────────────────────────────────────────────────
  *  Memory — use PSRAM (8 MB available)
  *──────────────────────────────────────────────────────────*/
-#define LV_MEM_SIZE             (2 * 1024 * 1024U)   /* 2 MB from PSRAM */
+#define LV_MEM_SIZE             (4 * 1024 * 1024U)   /* 4 MB from PSRAM */
 
 /*──────────────────────────────────────────────────────────
  *  Tick source — Arduino millis()
@@ -31,8 +31,13 @@
 #define LV_USE_LOG              1
 #define LV_USE_DEBUG            0
 #define LV_USE_DRAW_SW          1
+#define LV_USE_DRAW_SDL         0
+#define LV_USE_DRAW_RENESAS     0
+#define LV_USE_DRAW_NANOVG      0
+#define LV_USE_DRAW_VG_LITE     0
 #define LV_USE_OBSOLETE         0
 
+#define LV_USE_SNAPSHOT         0
 #define LV_USE_SYSMON           0
 #define LV_USE_PERF_MONITOR     0
 

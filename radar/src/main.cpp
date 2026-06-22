@@ -21,6 +21,9 @@
 static LGFX     lcd;
 static lv_display_t *disp = nullptr;
 
+/* ── touch (global — fed from loop) ─────────────────────── */
+static lv_indev_t *touch_indev = nullptr;
+
 /* ── radar data ─────────────────────────────────────────── */
 static aircraft_t    aircraft[MAX_AIRCRAFT];
 static int           aircraft_count = 0;
@@ -37,31 +40,48 @@ extern "C" uint32_t lv_tick_elapsed_ms(void) {
 /* ── flush: LVGL draws → push to LGFX ──────────────────── */
 static void flush_cb(lv_display_t *d, const lv_area_t *area,
                      uint8_t *px_map) {
-    lcd.pushImageDMA(area->x1, area->y1,
-                     area->x2 - area->x1 + 1,
-                     area->y2 - area->y1 + 1,
-                     (lgfx::rgb565_t*)px_map);
+    uint32_t w = (area->x2 - area->x1 + 1);
+    uint32_t h = (area->y2 - area->y1 + 1);
+
+    lcd.startWrite();
+    lcd.setAddrWindow(area->x1, area->y1, w, h);
+    lcd.pushPixelsDMA((uint16_t*)px_map, w * h, true);
+    lcd.endWrite();
+
     lv_display_flush_ready(d);
 }
 
 /* ── display init ───────────────────────────────────────── */
 static bool display_init(void) {
-    lcd.init();
+    Serial.println("Display: calling lcd.init()...");
+    if (!lcd.init()) {
+        Serial.println("Display: lcd.init() FAILED!");
+        return false;
+    }
+    Serial.println("Display: lcd.init() OK");
+
     lcd.setRotation(0);
     lcd.setColorDepth(16);
+    lcd.setBrightness(255);
 
     Serial.printf("Display: %dx%d\n", lcd.width(), lcd.height());
 
-    // Diagnostic: fill screen with test pattern to verify display works
-    lcd.fillScreen(TFT_RED);
-    delay(1000);
-    lcd.fillScreen(TFT_GREEN);
-    delay(1000);
-    lcd.fillScreen(TFT_BLUE);
-    delay(1000);
     lcd.fillScreen(TFT_BLACK);
 
-    lcd.setBrightness(255);
+    // Splash screen
+    lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+    lcd.setTextSize(SPLASH_TITLE_SIZE);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.drawString(SPLASH_TITLE, 240, 200);
+    lcd.setTextColor(0x07E0, TFT_BLACK);  // dim green
+    lcd.setTextSize(SPLASH_SUBTITLE_SIZE);
+    lcd.drawString(SPLASH_SUBTITLE, 240, 250);
+    lcd.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+    lcd.drawString(SPLASH_VERSION, 240, 280);
+
+    // brief pause so the user sees it before WiFi init
+    delay(800);
+
     return true;
 }
 
@@ -100,6 +120,8 @@ void setup(void) {
     Serial.begin(115200);
     delay(1000);
 
+    /* I2C scan: GT911 found at 0x14 and 0x5D (confirmed). */
+
     Serial.println("\n=== ESP32 Radar Display ===");
     Serial.printf("dump1090: http://%s:%d%s\n",
                    DUMP1090_HOST, DUMP1090_PORT, DUMP1090_PATH);
@@ -107,16 +129,16 @@ void setup(void) {
     Serial.printf("Range:    %.0f NM (%d px radius)\n",
                    (double)RADAR_RANGE_NM, RADAR_RADIUS_PX);
 
-    wifi_init();
-
     if (!display_init()) {
         Serial.println("Display init failed — halting");
         while (1) delay(1000);
     }
 
+    wifi_init();
+
     lvgl_init();
     radar_ui_init();
-    radar_ui_setup_touch(&lcd);   /* register touch + backlight */
+    touch_indev = (lv_indev_t*)radar_ui_setup_touch(&lcd);  /* register touch + backlight */
 
     /* initial data fetch */
     aircraft_count = aircraft_fetch(aircraft, MAX_AIRCRAFT);
@@ -133,17 +155,27 @@ void setup(void) {
 void loop(void) {
     unsigned long now = millis();
 
+    // Touch + LVGL — poll every loop (TAMCTec library, no throttling)
+    if (touch_indev) lv_indev_read(touch_indev);
+
+    // LVGL housekeeping — every ~5 ms
+    {
+        static unsigned long last_lvgl = 0;
+        if (now - last_lvgl >= 5) {
+            last_lvgl = now;
+            lv_timer_handler();
+        }
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
         wifi_init();
     }
-
-    // LVGL housekeeping (no lv_tick_inc — LV_TICK_CUSTOM handles it)
-    lv_timer_handler();
 
     // Data refresh — back off after failures
     unsigned long interval = fetch_failed ? FETCH_BACKOFF_MS : DATA_REFRESH_MS;
     if (now - last_fetch >= interval) {
         int n = aircraft_fetch(aircraft, MAX_AIRCRAFT);
+        Serial.printf("Fetch: %d aircraft\n", n);
         if (n >= 0) {
             fetch_failed = false;
             aircraft_count = n;
@@ -151,7 +183,7 @@ void loop(void) {
             fetch_failed = true;
         }
         bool feed_ok = (n >= 0);
-        radar_ui_update_aircraft(aircraft, aircraft_count);  /* computes positions */
+        radar_ui_update_aircraft(aircraft, aircraft_count);  /* computes positions + redraws */
 
         /* update system status in menu */
         radar_ui_update_status(
@@ -167,9 +199,9 @@ void loop(void) {
     // Sweep animation
     if (now - last_sweep >= SWEEP_UPDATE_MS) {
         radar_ui_sweep_tick();
-        radar_ui_update_aircraft(aircraft, aircraft_count);
+        radar_ui_redraw();
         last_sweep = now;
     }
 
-    delay(5);
+    delay(1);  // yield
 }

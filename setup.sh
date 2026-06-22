@@ -2,6 +2,9 @@
 # ─────────────────────────────────────────────────────────────
 #  ESP32 Radar Display — setup symlinks for shared sources
 #
+#  Optional — for IDE code intelligence only.
+#  The PlatformIO build works without these via radar/extra_src.py.
+#
 #  Run once after cloning the repo, from the repository root:
 #    ./setup.sh
 # ─────────────────────────────────────────────────────────────

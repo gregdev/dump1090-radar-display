@@ -1,9 +1,10 @@
 /*
- * LovyanGFX configuration for ESP32-4848S040C_I_Y_3
- * (Jingcai/Guition board: ST7701 RGB 480x480, GT911 touch)
+ * LovyanGFX configuration for ESP32-4848S040 (Guition/Jingcai)
+ * ST7701 RGB 480x480, GPIO38 backlight
+ * Touch: handled separately via TAMCTec/gt911-arduino library
  *
- * Uses LGFX's built-in Panel_ST7701_guition_esp32_4848S040
- * which has the correct LCD init sequence for this board.
+ * Based on working reference:
+ * https://github.com/FigueiredoStable/LovyanGFX-GUITION-ESP32-4848S040
  */
 #pragma once
 
@@ -16,34 +17,11 @@ class LGFX : public lgfx::LGFX_Device
 {
     lgfx::Panel_ST7701_guition_esp32_4848S040 _panel_instance;
     lgfx::Bus_RGB    _bus_instance;
-    lgfx::Touch_GT911 _touch_instance;
-    lgfx::Light_PWM  _light_instance;
+    lgfx::Light_PWM   _light_instance;
 
 public:
     LGFX(void)
     {
-        {
-            auto cfg = _bus_instance.config();
-            cfg.freq_write = 26000000;
-
-            cfg.pin_pclk  = 21;
-            cfg.pin_vsync = 17;
-            cfg.pin_hsync = 16;
-            cfg.pin_henable = -1;
-
-            cfg.pin_d0  = 4;   cfg.pin_d1  = 5;
-            cfg.pin_d2  = 6;   cfg.pin_d3  = 7;
-            cfg.pin_d4  = 15;  cfg.pin_d5  = 8;
-            cfg.pin_d6  = 20;  cfg.pin_d7  = 3;
-            cfg.pin_d8  = 46;  cfg.pin_d9  = 9;
-            cfg.pin_d10 = 10;  cfg.pin_d11 = 11;
-            cfg.pin_d12 = 12;  cfg.pin_d13 = 13;
-            cfg.pin_d14 = 14;  cfg.pin_d15 = 0;
-
-            _bus_instance.config(cfg);
-            _panel_instance.setBus(&_bus_instance);
-        }
-
         {
             auto cfg = _panel_instance.config();
             cfg.memory_width  = 480;
@@ -56,29 +34,62 @@ public:
         }
 
         {
-            auto cfg = _touch_instance.config();
-            cfg.pin_sda  = 19;
-            cfg.pin_scl  = 45;
-            cfg.i2c_addr = 0x5D;
-            cfg.i2c_port = 1;
-            cfg.freq = 400000;
-            cfg.x_min = 0;
-            cfg.x_max = 479;
-            cfg.y_min = 0;
-            cfg.y_max = 479;
-            _touch_instance.config(cfg);
-            _panel_instance.setTouch(&_touch_instance);
+            // 3-wire SPI for ST7701 init commands
+            auto cfg = _panel_instance.config_detail();
+            cfg.pin_cs   = 39;
+            cfg.pin_sclk = 48;
+            cfg.pin_mosi = 47;  // SDA
+            _panel_instance.config_detail(cfg);
         }
 
         {
-            auto cfg = _light_instance.config();
-            cfg.pin_bl = 38;
-            cfg.invert = false;
-            cfg.freq   = 5000;
-            cfg.pwm_channel = 0;
-            _light_instance.config(cfg);
-            _panel_instance.setLight(&_light_instance);
+            auto cfg = _bus_instance.config();
+            cfg.panel = &_panel_instance;        // ← REQUIRED! bus needs panel ref for dimensions
+
+            cfg.pin_d0   = GPIO_NUM_4;   // B0
+            cfg.pin_d1   = GPIO_NUM_5;   // B1
+            cfg.pin_d2   = GPIO_NUM_6;   // B2
+            cfg.pin_d3   = GPIO_NUM_7;   // B3
+            cfg.pin_d4   = GPIO_NUM_15;  // B4
+            cfg.pin_d5   = GPIO_NUM_8;   // G0
+            cfg.pin_d6   = GPIO_NUM_20;  // G1
+            cfg.pin_d7   = GPIO_NUM_3;   // G2
+            cfg.pin_d8   = GPIO_NUM_46;  // G3
+            cfg.pin_d9   = GPIO_NUM_9;   // G4
+            cfg.pin_d10  = GPIO_NUM_10;  // G5
+            cfg.pin_d11  = GPIO_NUM_11;  // R0
+            cfg.pin_d12  = GPIO_NUM_12;  // R1
+            cfg.pin_d13  = GPIO_NUM_13;  // R2
+            cfg.pin_d14  = GPIO_NUM_14;  // R3
+            cfg.pin_d15  = GPIO_NUM_0;   // R4
+
+            cfg.pin_henable = GPIO_NUM_18;
+            cfg.pin_vsync   = GPIO_NUM_17;
+            cfg.pin_hsync   = GPIO_NUM_16;
+            cfg.pin_pclk    = GPIO_NUM_21;
+            cfg.freq_write  = 14000000;
+
+            cfg.hsync_polarity    = 0;
+            cfg.hsync_front_porch = 10;
+            cfg.hsync_pulse_width = 8;
+            cfg.hsync_back_porch  = 50;
+            cfg.vsync_polarity    = 0;
+            cfg.vsync_front_porch = 10;
+            cfg.vsync_pulse_width = 8;
+            cfg.vsync_back_porch  = 20;
+            cfg.pclk_idle_high    = 0;
+            cfg.de_idle_high      = 1;
+
+            _bus_instance.config(cfg);
         }
+        _panel_instance.setBus(&_bus_instance);
+
+        {
+            auto cfg = _light_instance.config();
+            cfg.pin_bl = GPIO_NUM_38;
+            _light_instance.config(cfg);
+        }
+        _panel_instance.setLight(&_light_instance);
 
         setPanel(&_panel_instance);
     }

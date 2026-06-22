@@ -8,6 +8,9 @@ pc_sim/_deps/
 
 # ── Symlinks to shared sources (generated during setup) ────
 radar/src/aircraft_data.cpp
+
+# ── User config (copy from config.example.h) ────────────────
+src/config.h
 radar/src/aircraft_data.h
 radar/src/coord_convert.cpp
 radar/src/coord_convert.h

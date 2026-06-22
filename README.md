@@ -2,6 +2,27 @@
 
 Live aircraft radar on a 4" 480×480 smart display (ESP32-4848S040), pulling data from a local dump1090/readsb instance over WiFi.
 
+## Quick start
+
+```bash
+git clone https://github.com/gregdev/dump1090-radar-display.git radar-display
+cd radar-display
+
+# 1. Create your config
+cp src/config.example.h src/config.h
+# Edit src/config.h: set WiFi SSID/password, dump1090 host IP, and home lat/lon
+
+# 2. Build & flash (ESP32)
+cd radar
+pio run --target upload
+
+# Or run the PC simulator (no hardware needed)
+cd pc_sim && ./run.sh        # Linux/WSL
+# Windows: cmake -B build && cmake --build build && .\build\Debug\radar_sim.exe
+```
+
+> **Windows users**: see [First-time setup](#first-time-setup) below for PlatformIO and symlink details.
+
 ## Hardware
 
 - **Board**: ESP32-4848S040C_I_Y_3 (Jingcai/Guition)
@@ -16,7 +37,7 @@ Live aircraft radar on a 4" 480×480 smart display (ESP32-4848S040), pulling dat
 radar/
 ├── platformio.ini          # PlatformIO build config
 ├── lv_conf.h               # LVGL v9 configuration
-├── setup.sh / setup.ps1    # Symlink shared sources (run once after clone)
+├── setup.sh / setup.ps1    # Optional: symlinks for IDE code intelligence
 ├── flash_win.ps1           # Windows PowerShell flash helper
 ├── build_flash.sh          # WSL build/flash helper
 ├── src/
@@ -33,13 +54,15 @@ radar/
 
 ## First-time setup
 
+> **The Quick Start above is all you need.** The `setup.sh` / `setup.ps1` scripts below are optional — they create symlinks for IDE code intelligence (Go to Definition, etc.). The PlatformIO build uses `radar/extra_src.py` to find shared sources automatically.
+
 ### Windows
 
 ```powershell
 git clone <url> radar
 cd radar
 python -m pip install platformio
-.\setup.ps1           # creates symlinks (needs Admin or Developer Mode)
+.\setup.ps1           # optional: symlinks for IDE support
 cd radar
 pio run               # builds firmware
 pio run --target upload  # builds + flashes
@@ -51,7 +74,7 @@ pio run --target upload  # builds + flashes
 git clone <url> radar
 cd radar
 pipx install platformio  # or: python3 -m pip install platformio
-./setup.sh
+./setup.sh                # optional: symlinks for IDE support
 cd radar
 pio run                    # build
 pio run --target upload    # build + flash (needs USB passthrough on WSL)

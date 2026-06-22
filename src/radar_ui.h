@@ -28,6 +28,12 @@ void radar_ui_update_aircraft(const void *aircraft_array, int count);
 void radar_ui_sweep_tick(void);
 
 /**
+ * Redraw the canvas (static bg + cached aircraft + sweep) without
+ * recomputing screen positions.  Lightweight, call every sweep tick.
+ */
+void radar_ui_redraw(void);
+
+/**
  * Feed raw touch/pointer coordinates to the radar UI for
  * tap-to-inspect and swipe-menu handling.
  *
@@ -57,7 +63,7 @@ void radar_ui_update_status(int wifi_rssi, const char *wifi_ip,
  *
  * @param panel  Pointer to the initialised ESP_Panel instance.
  */
-void radar_ui_setup_touch(void *panel);
+void * radar_ui_setup_touch(void *panel);  /* returns lv_indev_t* for loop feeding */
 
 /**
  * Get the current radar range in nautical miles (may differ from
