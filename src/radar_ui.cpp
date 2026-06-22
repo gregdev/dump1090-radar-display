@@ -1,7 +1,14 @@
 #include "radar_ui.h"
 #include "aircraft_data.h"
 #include "config.h"
-#include "land_mask.h"
+#if __has_include("land_mask.h")
+  #include "land_mask.h"
+#else
+  #define LAND_MASK_W 1
+  #define LAND_MASK_H 1
+  static const uint8_t land_mask_rgb565[2] = {0,0};
+  #pragma message("land_mask.h not found — land outline disabled")
+#endif
 #include "coord_convert.h"
 #define _USE_MATH_DEFINES
 #include <math.h>
