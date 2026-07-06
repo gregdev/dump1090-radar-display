@@ -30,6 +30,7 @@ public:
             cfg.panel_height  = 480;
             cfg.offset_x = 0;
             cfg.offset_y = 0;
+            cfg.pin_rst  = LCD_RST;
             _panel_instance.config(cfg);
         }
 

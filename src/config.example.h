@@ -53,8 +53,9 @@
 
 // ============================================================
 //  Display driver pinout
-//  These are set in radar/src/lgfx_config.h for LovyanGFX.
-//  If you're porting to a different display library, configure
-//  your pins there — these defines are not used by default.
+//  This display uses RGB parallel interface (configured in
+//  lgfx_config.h).  LCD_RST is the only pin exposed here as
+//  a config override — the rest are hardwired in lgfx_config.h.
 //  See docs/hardware-reference.md for your board's pinout.
 // ============================================================
+#define LCD_RST   35    // LCD reset — override for dev-board wiring

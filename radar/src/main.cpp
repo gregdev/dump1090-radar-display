@@ -9,10 +9,13 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_task_wdt.h>
+#include <soc/timer_group_struct.h>
+#include <soc/lcd_cam_struct.h>
+#include "config.h"
 #include "lgfx_config.h"
 
 #include "lvgl.h"
-#include "config.h"
 #include "radar_ui.h"
 #include "aircraft_data.h"
 #include "coord_convert.h"
@@ -53,19 +56,88 @@ static void flush_cb(lv_display_t *d, const lv_area_t *area,
 
 /* ── display init ───────────────────────────────────────── */
 static bool display_init(void) {
+    // ── Pre-init diagnostics ──────────────────────────────
+    Serial.printf("PSRAM size: %u bytes\n", ESP.getPsramSize());
+    Serial.printf("Free PSRAM: %u bytes\n", ESP.getFreePsram());
+    Serial.printf("Free heap:  %u bytes\n", ESP.getFreeHeap());
+
+    // Quick PSRAM allocation test
+    void *test = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+    Serial.printf("PSRAM test: %s\n", test ? "OK" : "FAILED");
+    if (test) heap_caps_free(test);
+
+    Serial.flush();  // ensure all output before potentially hanging call
+
+    // ── Large PSRAM test (same size Bus_RGB allocates) ────
+    Serial.print("460KB PSRAM test: ");
+    Serial.flush();
+    void *big = heap_caps_malloc(460800, MALLOC_CAP_SPIRAM);
+    if (big) {
+        memset(big, 0, 460800);
+        Serial.println("OK");
+        heap_caps_free(big);
+    } else {
+        Serial.println("FAILED (null)");
+    }
+    Serial.flush();
+
+    // ── Test ST7701 SPI pins (47=MOSI, 48=SCLK, 39=CS) ────
+    Serial.print("GPIO 47 test: ");
+    Serial.flush();
+    pinMode(47, OUTPUT);
+    digitalWrite(47, LOW);
+    Serial.println("OK");
+    Serial.print("GPIO 48 test: ");
+    Serial.flush();
+    pinMode(48, OUTPUT);
+    digitalWrite(48, LOW);
+    Serial.println("OK");
+    Serial.print("GPIO 39 test: ");
+    Serial.flush();
+    pinMode(39, OUTPUT);
+    digitalWrite(39, LOW);
+    Serial.println("OK");
+    Serial.flush();
+
+    // Disable ALL watchdogs during lcd.init()
+    // TG1WDT (interrupt WDT) — direct register disable
+    TIMERG1.wdtconfig0.wdt_en = 0;
+    TIMERG1.wdtconfig0.wdt_flashboot_mod_en = 0;
+    // TG0/Task WDT
+    disableLoopWDT();
+    esp_task_wdt_deinit();
+
     Serial.println("Display: calling lcd.init()...");
-    if (!lcd.init()) {
+    Serial.flush();
+    bool ok = lcd.init();
+
+    // Re-enable VSYNC interrupt (was paused during ST7701 SPI init)
+    LCD_CAM.lc_dma_int_ena.val = 1;
+
+    if (!ok) {
         Serial.println("Display: lcd.init() FAILED!");
         return false;
     }
     Serial.println("Display: lcd.init() OK");
+    Serial.flush();
 
+    Serial.println("Display: setRotation...");
+    Serial.flush();
     lcd.setRotation(0);
+    Serial.println("Display: setColorDepth...");
+    Serial.flush();
     lcd.setColorDepth(16);
+    Serial.println("Display: setBrightness...");
+    Serial.flush();
     lcd.setBrightness(255);
 
     Serial.printf("Display: %dx%d\n", lcd.width(), lcd.height());
+    Serial.flush();
 
+    Serial.println("Display: fillScreen(RED)...");
+    Serial.flush();
+    lcd.fillScreen(TFT_RED);
+    delay(2000);  // let user see red screen
     lcd.fillScreen(TFT_BLACK);
 
     // Splash screen
@@ -105,6 +177,7 @@ static void wifi_init(void) {
     int retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 40) {
         delay(500);
+        yield();  // feed Arduino WDT
         Serial.print(".");
         retries++;
     }
@@ -135,6 +208,10 @@ void setup(void) {
     }
 
     wifi_init();
+
+    // Re-enable task watchdog now that blocking init is done
+    esp_task_wdt_init(10, true);
+    enableLoopWDT();
 
     lvgl_init();
     radar_ui_init();
