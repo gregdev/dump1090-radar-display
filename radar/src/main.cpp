@@ -1,7 +1,10 @@
 /**
- * ESP32-S3 Radar Display — main entry point.
+ * ESP32 Radar Display — main entry point.
  *
- * Target:  ESP32-4848S040 (ST7701 RGB 480x480, 8MB PSRAM, 16MB Flash)
+ * Target 1:  ESP32-S3 + ST7701 RGB 480x480 (ESP32-4848S040, 8MB PSRAM)
+ * Target 2:  ESP32-C6 + ILI9341 SPI 240x320 → 240x240 crop
+ *
+ * Select with build flag: -DPLATFORM_C6_ILI9341
  * Display: LovyanGFX
  * Build:   pio run
  * Flash:   pio run --target upload
@@ -9,6 +12,9 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#ifndef PLATFORM_C6_ILI9341
+#include <soc/lcd_cam_struct.h>
+#endif
 #include "lgfx_config.h"
 
 #include "lvgl.h"
@@ -21,7 +27,7 @@
 static LGFX     lcd;
 static lv_display_t *disp = nullptr;
 
-/* ── touch (global — fed from loop) ─────────────────────── */
+/* ── touch (global — fed from loop; nullptr on C6) ─────── */
 static lv_indev_t *touch_indev = nullptr;
 
 /* ── radar data ─────────────────────────────────────────── */
@@ -44,7 +50,7 @@ static void flush_cb(lv_display_t *d, const lv_area_t *area,
     uint32_t h = (area->y2 - area->y1 + 1);
 
     lcd.startWrite();
-    lcd.setAddrWindow(area->x1, area->y1, w, h);
+    lcd.setAddrWindow(area->x1 + DISPLAY_OFFSET_X, area->y1 + DISPLAY_OFFSET_Y, w, h);
     lcd.pushPixelsDMA((uint16_t*)px_map, w * h, true);
     lcd.endWrite();
 
@@ -60,7 +66,16 @@ static bool display_init(void) {
     }
     Serial.println("Display: lcd.init() OK");
 
+#ifndef PLATFORM_C6_ILI9341
+    // Re-enable VSYNC interrupt (paused during ST7701 SPI init by LovyanGFX)
+    LCD_CAM.lc_dma_int_ena.val = 1;
+#endif
+
+#ifdef PLATFORM_C6_ILI9341
+    lcd.setRotation(3);   // 90° anticlockwise (landscape, USB on left)
+#else
     lcd.setRotation(0);
+#endif
     lcd.setColorDepth(16);
     lcd.setBrightness(255);
 
@@ -68,16 +83,16 @@ static bool display_init(void) {
 
     lcd.fillScreen(TFT_BLACK);
 
-    // Splash screen
+    // Splash screen — positions from config.h (platform-aware)
     lcd.setTextColor(TFT_GREEN, TFT_BLACK);
     lcd.setTextSize(SPLASH_TITLE_SIZE);
     lcd.setTextDatum(MC_DATUM);
-    lcd.drawString(SPLASH_TITLE, 240, 200);
+    lcd.drawString(SPLASH_TITLE, SPLASH_TITLE_X, SPLASH_TITLE_Y);
     lcd.setTextColor(0x07E0, TFT_BLACK);  // dim green
     lcd.setTextSize(SPLASH_SUBTITLE_SIZE);
-    lcd.drawString(SPLASH_SUBTITLE, 240, 250);
+    lcd.drawString(SPLASH_SUBTITLE, SPLASH_SUBTITLE_X, SPLASH_SUBTITLE_Y);
     lcd.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-    lcd.drawString(SPLASH_VERSION, 240, 280);
+    lcd.drawString(SPLASH_VERSION, SPLASH_VERSION_X, SPLASH_VERSION_Y);
 
     // brief pause so the user sees it before WiFi init
     delay(800);
@@ -89,11 +104,11 @@ static bool display_init(void) {
 static void lvgl_init(void) {
     lv_init();
 
-    disp = lv_display_create(lcd.width(), lcd.height());
+    disp = lv_display_create(SCR_W, SCR_H);
     lv_display_set_flush_cb(disp, flush_cb);
 
     // Use partial buffer — LGFX handles the DMA via pushImageDMA
-    static lv_color_t buf1[480 * 20];
+    static lv_color_t buf1[SCR_W * LVGL_PARTIAL_BUF_LINES];
     lv_display_set_buffers(disp, buf1, nullptr, sizeof(buf1),
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
 }
@@ -138,7 +153,13 @@ void setup(void) {
 
     lvgl_init();
     radar_ui_init();
+
+#ifdef RADAR_NO_TOUCH
+    touch_indev = nullptr;
+    (void)lcd;  // unused on C6 (backlight set via LGFX directly)
+#else
     touch_indev = (lv_indev_t*)radar_ui_setup_touch(&lcd);  /* register touch + backlight */
+#endif
 
     /* initial data fetch */
     aircraft_count = aircraft_fetch(aircraft, MAX_AIRCRAFT);
@@ -156,7 +177,9 @@ void loop(void) {
     unsigned long now = millis();
 
     // Touch + LVGL — poll every loop (TAMCTec library, no throttling)
+#ifndef RADAR_NO_TOUCH
     if (touch_indev) lv_indev_read(touch_indev);
+#endif
 
     // LVGL housekeeping — every ~5 ms
     {

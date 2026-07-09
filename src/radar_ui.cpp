@@ -25,11 +25,14 @@
 #ifdef ARDUINO
 #include "lgfx_config.h"
 #include <Preferences.h>
+
+#ifndef RADAR_NO_TOUCH
 #include <Wire.h>
 #include <TAMC_GT911.h>
+static TAMC_GT911 ts(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, SCR_W, SCR_H);
+#endif
 
 static LGFX *g_lcd = nullptr;  // for backlight callbacks
-static TAMC_GT911 ts(19, 45, -1, -1, 480, 480);  // SDA, SCL, INT, RST, Xmax, Ymax
 #else
 class LGFX; /* forward decl for PC sim */
 #endif
@@ -129,12 +132,8 @@ static int current_theme = 0;  /* 0=green, 1=blue, 2=red, 3=amber */
 #define CLR_MENU_TEXT    (themes[current_theme].menu_text)
 #define CLR_MENU_HEADER  (themes[current_theme].menu_header)
 
-/* ── layout constants for circular cutout ──────────────── */
-#define SCR_W            480
-#define SCR_H            480
-#define SCR_CX           240
-#define SCR_CY           240
-#define CIRCLE_R         RADAR_RADIUS_PX
+/* ── layout constants (from config.h) ──────────────────── */
+/* SCR_W, SCR_H, SCR_CX, SCR_CY, CIRCLE_R now defined in config.h */
 
 /* forward decls */
 static void apply_theme_to_widgets(void);
@@ -436,15 +435,19 @@ void radar_ui_init(void) {
 
     /* full-screen canvas for radar graphics */
     radar_canvas = lv_canvas_create(scr);
-    lv_obj_set_size(radar_canvas, 480, 480);
+    lv_obj_set_size(radar_canvas, SCR_W, SCR_H);
     lv_obj_align(radar_canvas, LV_ALIGN_CENTER, 0, 0);
 
     /* allocate draw buffer */
-    buf_w = 480; buf_h = 480;
+    buf_w = SCR_W; buf_h = SCR_H;
     buf_cf = LV_COLOR_FORMAT_RGB565;
     size_t buf_size = LV_CANVAS_BUF_SIZE(buf_w, buf_h,
         LV_COLOR_FORMAT_GET_BPP(buf_cf), LV_DRAW_BUF_STRIDE_ALIGN);
+#ifdef PLATFORM_C6_ILI9341
+    buf_mem = (uint8_t*)malloc(buf_size);
+#else
     buf_mem = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
     Serial.printf("Canvas buffer: %p (%d bytes)\n", buf_mem, (int)buf_size);
     if (!buf_mem) return;
 
@@ -485,8 +488,8 @@ void radar_ui_init(void) {
         lv_obj_set_style_text_font(compass_labels[i], &lv_font_montserrat_14, 0);
 
         float rad = (float)(degs[i] - 90) * (float)M_PI / 180.0f;
-        int lx = 240 + (int)((RADAR_RADIUS_PX - 18) * cosf(rad));
-        int ly = 240 + (int)((RADAR_RADIUS_PX - 18) * sinf(rad));
+        int lx = SCR_CX + (int)((RADAR_RADIUS_PX - 18) * cosf(rad));
+        int ly = SCR_CY + (int)((RADAR_RADIUS_PX - 18) * sinf(rad));
         lv_obj_set_pos(compass_labels[i], lx - 8, ly - 8);
     }
 
@@ -596,7 +599,7 @@ static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
     lv_obj_set_style_border_width(detail_popup, 1, 0);
     lv_obj_set_style_radius(detail_popup, 4, 0);
     lv_obj_set_style_pad_all(detail_popup, 6, 0);
-    lv_obj_set_size(detail_popup, 156, 74);
+    lv_obj_set_size(detail_popup, SCR_W * 156 / 480, SCR_H * 74 / 480);
 
     /* ── text ──────────────────────────────────────── */
     const char *id = ac->flight[0] ? ac->flight : ac->hex;
@@ -628,7 +631,8 @@ static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
     lv_obj_set_style_text_font(label, &lv_font_monoid_12, 0);
 
     /* ── position: near tap but clamp inside circle ─── */
-    const int PW = 156, PH = 74;
+    const int PW = SCR_W * 156 / 480;
+    const int PH = SCR_H * 74 / 480;
     int px = tap_x + 12;
     int py = tap_y - PH / 2;
 
@@ -663,10 +667,11 @@ static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
  * ═══════════════════════════════════════════════════════════ */
 
 #define MENU_Y_HIDDEN  SCR_H        /* off-screen below */
-#define MENU_Y_VISIBLE (SCR_CY + CIRCLE_R - 208)  /* bottom 208px of circle */
-#define MENU_H         208
-#define MENU_W         (CIRCLE_R * 2 - 16)  /* 424 px — fits in circle */
+#define MENU_H         (CIRCLE_R * 208 / 220)  /* scale with radius */
+#define MENU_Y_VISIBLE (SCR_CY + CIRCLE_R - MENU_H)
+#define MENU_W         (CIRCLE_R * 2 - 16)     /* fits inside circle */
 #define MENU_X         (SCR_CX - MENU_W / 2)
+#define MENU_BTN_W     (MENU_W / 8)            /* range button width */
 
 static void menu_set_range_cb(lv_event_t *e) {
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
@@ -769,7 +774,7 @@ static void build_menu_content(lv_obj_t *parent) {
     for (int i = 0; i < 4; i++) {
         char rng[8]; snprintf(rng, sizeof(rng), "%d", ranges[i]);
         lv_obj_t *b = lv_obj_create(row);
-        lv_obj_set_size(b, 54, 28);
+        lv_obj_set_size(b, MENU_BTN_W, 28);
         lv_obj_set_style_bg_color(b, CLR_RING, 0);
         lv_obj_set_style_border_color(b, CLR_MENU_BORDER, 0);
         lv_obj_set_style_border_width(b, 1, 0);
@@ -830,7 +835,7 @@ static void build_menu_content(lv_obj_t *parent) {
     static const char *tnames[] = {"Green", "Blue", "Red", "Amber"};
     for (int i = 0; i < 4; i++) {
         lv_obj_t *tb = lv_obj_create(trow);
-        lv_obj_set_size(tb, 64, 28);
+        lv_obj_set_size(tb, MENU_BTN_W + 10, 28);
         lv_obj_set_style_bg_color(tb, themes[i].menu_bg, 0);
         lv_obj_set_style_border_color(tb, themes[i].menu_border, 0);
         lv_obj_set_style_border_width(tb, 1, 0);
@@ -1152,6 +1157,7 @@ void radar_ui_update_status(int wifi_rssi, const char *wifi_ip,
 void * radar_ui_setup_touch(void *lcd_ptr) {
     lv_indev_t *indev = nullptr;
 #ifdef ARDUINO
+#ifndef RADAR_NO_TOUCH
     g_lcd = static_cast<LGFX*>(lcd_ptr);
 
     /* Store backlight control for the brightness slider */
@@ -1160,7 +1166,7 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
     };
 
     /* Init GT911 via TAMCTec library (no LGFX throttling) */
-    Wire.begin(19, 45, 400000);
+    Wire.begin(TOUCH_SDA, TOUCH_SCL, 400000);
     ts.begin();
     ts.setRotation(ROTATION_NORMAL);
     Serial.println("Touch: GT911 (TAMCTec) ready");
@@ -1174,8 +1180,8 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
 
         ts.read();
         if (ts.isTouched && ts.points[0].x > 0 && ts.points[0].y > 0) {
-            int tx = map(ts.points[0].x, 480, 0, 0, 479);
-            int ty = map(ts.points[0].y, 480, 0, 0, 479);
+            int tx = map(ts.points[0].x, SCR_W, 0, 0, SCR_W - 1);
+            int ty = map(ts.points[0].y, SCR_H, 0, 0, SCR_H - 1);
             data->point.x = tx;
             data->point.y = ty;
             data->state   = LV_INDEV_STATE_PRESSED;
@@ -1195,6 +1201,14 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
     });
 
     Serial.println("Touch: LVGL indev registered");
+#else
+    /* C6 / no-touch: store backlight setter only, no indev */
+    g_lcd = static_cast<LGFX*>(lcd_ptr);
+    backlight_setter = [](int percent) {
+        if (g_lcd) g_lcd->setBrightness(constrain(percent, 0, 100) * 255 / 100);
+    };
+    (void)lcd_ptr;
+#endif
 #else
     (void)lcd_ptr;  /* no-op on PC simulator */
 #endif

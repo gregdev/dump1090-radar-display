@@ -1,15 +1,83 @@
 /*
- * LovyanGFX configuration for ESP32-4848S040 (Guition/Jingcai)
- * ST7701 RGB 480x480, GPIO38 backlight
- * Touch: handled separately via TAMCTec/gt911-arduino library
+ * LovyanGFX configuration — supports two platforms:
+ *   ESP32-S3:  ST7701 RGB 480x480 (ESP32-4848S040)
+ *   ESP32-C6:  ILI9341 SPI 240x320 (square 240x240 crop)
  *
- * Based on working reference:
- * https://github.com/FigueiredoStable/LovyanGFX-GUITION-ESP32-4848S040
+ * Select via build flag: -DPLATFORM_C6_ILI9341
  */
 #pragma once
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+
+#ifdef PLATFORM_C6_ILI9341
+/* ═══════════════════════════════════════════════════════════
+ *  ESP32-C6 + ILI9341 2.4" SPI TFT  (240×320 panel, 240×240 crop)
+ * ═══════════════════════════════════════════════════════════ */
+#include "config.h"
+
+class LGFX : public lgfx::LGFX_Device
+{
+    lgfx::Panel_ILI9341  _panel_instance;
+    lgfx::Bus_SPI        _bus_instance;
+    lgfx::Light_PWM      _light_instance;
+
+public:
+    LGFX(void)
+    {
+        {
+            auto cfg = _bus_instance.config();
+            cfg.spi_host   = SPI2_HOST;
+            cfg.spi_mode   = 0;
+            cfg.freq_write = 40000000;   // 40 MHz SPI
+            cfg.freq_read  = 16000000;
+            cfg.spi_3wire  = false;
+            cfg.use_lock   = true;
+            cfg.dma_channel = SPI_DMA_CH_AUTO;
+            cfg.pin_sclk   = ILI9341_PIN_SCLK;
+            cfg.pin_mosi   = ILI9341_PIN_MOSI;
+            cfg.pin_miso   = ILI9341_PIN_MISO;
+            cfg.pin_dc     = ILI9341_PIN_DC;
+            _bus_instance.config(cfg);
+            _panel_instance.setBus(&_bus_instance);
+        }
+
+        {
+            auto cfg = _panel_instance.config();
+            cfg.pin_cs     = ILI9341_PIN_CS;
+            cfg.pin_rst    = ILI9341_PIN_RST;
+            cfg.panel_width  = 240;
+            cfg.panel_height = 320;
+            cfg.offset_x     = 0;
+            cfg.offset_y     = 0;       // logical top of panel
+            cfg.offset_rotation = 0;
+            cfg.readable     = false;
+            cfg.invert       = false;
+            cfg.rgb_order    = false;   // BGR
+            cfg.dlen_16bit   = false;
+            cfg.bus_shared   = false;
+            _panel_instance.config(cfg);
+        }
+
+        {
+            auto cfg = _light_instance.config();
+            cfg.pin_bl = ILI9341_PIN_BL;
+            cfg.invert = false;
+            cfg.freq   = 12000;         // 12 kHz PWM
+            cfg.pwm_channel = 0;
+            _light_instance.config(cfg);
+        }
+        _panel_instance.setLight(&_light_instance);
+
+        setPanel(&_panel_instance);
+    }
+};
+
+#else
+/* ═══════════════════════════════════════════════════════════
+ *  ESP32-S3 + ST7701 RGB 480×480  (ESP32-4848S040)
+ * ═══════════════════════════════════════════════════════════ */
+
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 
@@ -94,3 +162,4 @@ public:
         setPanel(&_panel_instance);
     }
 };
+#endif

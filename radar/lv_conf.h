@@ -14,9 +14,13 @@
 #define LV_COLOR_16_SWAP        0       /* 0 = little-endian (ESP32 is LE) */
 
 /*──────────────────────────────────────────────────────────
- *  Memory — use PSRAM (8 MB available)
+ *  Memory — PSRAM on S3, SRAM-only on C6
  *──────────────────────────────────────────────────────────*/
-#define LV_MEM_SIZE             (4 * 1024 * 1024U)   /* 4 MB from PSRAM */
+#ifdef PLATFORM_C6_ILI9341
+  #define LV_MEM_SIZE             (128 * 1024U)       /* 128 KB from SRAM */
+#else
+  #define LV_MEM_SIZE             (4 * 1024 * 1024U)   /* 4 MB from PSRAM */
+#endif
 
 /*──────────────────────────────────────────────────────────
  *  Tick source — Arduino millis()
