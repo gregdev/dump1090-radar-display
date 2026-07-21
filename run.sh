@@ -1,1 +1,0 @@
-cd pc_sim && cmake -B build && cmake --build build && ./build/radar_sim

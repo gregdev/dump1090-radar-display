@@ -187,8 +187,16 @@ static void buf_fill(lv_color_t c) {
     uint32_t pair = ((uint32_t)v << 16) | v;
     uint32_t *dst = (uint32_t*)buf_mem;
     int i;
-    for (i = 0; i < total / 2; i++) dst[i] = pair;
+    uint32_t t_start = micros();
+    for (i = 0; i < total / 2; i++) {
+        dst[i] = pair;
+        if ((i & 0x3FF) == 0) {   // every 1024 words = 4KB
+            delayMicroseconds(500);  // give PSRAM a real gap between bursts
+        }
+    }
     if (total & 1) ((uint16_t*)buf_mem)[total - 1] = v;
+    Serial.printf("  fill done: total=%d t=%lu us\n", i, micros()-t_start);
+    Serial.flush();
 }
 
 /* Bresenham line */
@@ -340,7 +348,12 @@ static void radar_draw_static(void) {
         Serial.println("ERROR: radar_draw_static() called with NULL buf_mem!");
         return;
     }
+    Serial.println("static: buf_fill...");
+    Serial.flush();
     buf_fill(CLR_BG);
+    yield();
+    Serial.println("static: fill done");
+    Serial.flush();
 
     cx = buf_w / 2;
     cy = buf_h / 2;
@@ -452,10 +465,30 @@ void radar_ui_init(void) {
     if (!buf_mem) return;
 
     lv_canvas_set_buffer(radar_canvas, buf_mem, buf_w, buf_h, buf_cf);
+    Serial.println("UI: canvas set, drawing static...");
+    Serial.flush();
+
+    /* Test canvas buffer accessibility */
+    Serial.printf("UI: testing canvas at %p, size=%d\n", buf_mem, buf_size);
+    uint8_t* test = (uint8_t*)buf_mem;
+    test[0] = 0x55;
+    test[1] = 0xAA;
+    test[buf_size-1] = 0x77;
+    Serial.printf("UI: canvas test OK (first=%02x %02x last=%02x)\n",
+        test[0], test[1], test[buf_size-1]);
+
+    // Test 32-bit write
+    uint32_t* t32 = (uint32_t*)buf_mem;
+    Serial.printf("UI: 32-bit test at %p...", t32);
+    t32[0] = 0xDEADBEEF;
+    t32[1] = 0xCAFEBABE;
+    Serial.printf(" OK (val=%08x %08x)\n", t32[0], t32[1]);
+    Serial.flush();
 
     /* draw static elements once */
     radar_draw_static();
-    lv_obj_invalidate(radar_canvas);
+    Serial.println("UI: static drawn");
+    Serial.flush();
 
     /* info labels — placed INSIDE the circular cutout */
     /* bottom-left: 20px above bottom of circle (cy + r - 20) */
@@ -712,6 +745,25 @@ static void menu_set_brightness_cb(lv_event_t *e) {
     current_brightness = val;
     extern void radar_ui_set_backlight(int percent);
     radar_ui_set_backlight(val);
+    save_settings();
+}
+
+/* public API for encoder / external brightness control */
+
+/* forward decl — defined in the bridge section below */
+void radar_ui_set_backlight(int percent);
+
+int radar_ui_get_brightness(void) {
+    return current_brightness;
+}
+
+void radar_ui_adjust_brightness(int delta) {
+    int new_val = current_brightness + delta;
+    if (new_val < 1)  new_val = 1;
+    if (new_val > 100) new_val = 100;
+    if (new_val == current_brightness) return;
+    current_brightness = new_val;
+    radar_ui_set_backlight(new_val);
     save_settings();
 }
 

@@ -18,17 +18,12 @@ cp src/config.example.h src/config.h
 # Edit src/config.h: set WiFi SSID/password, dump1090 host IP, and home lat/lon
 
 # 2. Build & flash
-cd radar
 
 # ESP32-S3 + 480×480 RGB (default):
 pio run --target upload
 
 # ESP32-C6 + ILI9341 2.4" SPI:
 pio run -e esp32-c6-ili9341 --target upload
-
-# Or run the PC simulator (no hardware needed)
-cd pc_sim && ./run.sh        # Linux/WSL
-# Windows: cmake -B build && cmake --build build && .\build\Debug\radar_sim.exe
 ```
 
 > **Windows users**: see [First-time setup](#first-time-setup) below for PlatformIO details.
@@ -81,40 +76,36 @@ To change pins, edit the `ILI9341_PIN_*` defines under `#ifdef PLATFORM_C6_ILI93
 ## Project structure
 
 ```
-radar/
-├── platformio.ini          # PlatformIO build config (two envs)
-├── lv_conf.h               # LVGL v9 configuration (PSRAM-aware)
-├── boards/
-│   ├── esp32-s3-4848s040.json   # Custom S3 board definition
-│   └── esp32-c6-devkitc-1.json  # Custom C6 board (enables Arduino)
-├── extra_src.py            # Pulls shared sources from ../src
-├── setup.sh / setup.ps1    # Optional: symlinks for IDE code intelligence
-├── flash_win.ps1           # Windows PowerShell flash helper
-├── build_flash.sh          # WSL build/flash helper
-├── src/
-│   ├── main.cpp            # Entry point: WiFi → display → LVGL → radar loop
-│   ├── lgfx_config.h       # LovyanGFX config (RGB / SPI, platform-aware)
-│   ├── radar_ui.h / .cpp   # LVGL canvas-based radar rendering
-│   ├── aircraft_data.h / .cpp  # HTTP fetch + JSON parse
-│   ├── coord_convert.h / .cpp  # Geo → pixel projection
-│   └── config.h            # WiFi, dump1090 URL, home, display pins & dims
-├── fonts/
-│   └── lv_font_monoid_12.c # Custom bitmap font
-└── pc_sim/                 # PC simulator (data layer only)
+platformio.ini          # PlatformIO build config (two envs)
+lv_conf.h               # LVGL v9 configuration (PSRAM-aware)
+boards/
+├── esp32-s3-4848s040.json          # Guition integrated board definition
+├── esp32-s3-devkitc-1-n8r8.json    # Bare S3 DevKit, 8MB flash / 8MB PSRAM
+├── esp32-s3-devkitc-1-n16r8.json   # Bare S3 DevKit, 16MB flash / 8MB PSRAM
+└── esp32-c6-devkitc-1.json         # Custom C6 board (enables Arduino)
+flash_win.ps1            # Windows PowerShell flash helper
+build_flash.sh           # WSL build/flash helper
+src/
+├── main.cpp             # Entry point: WiFi → display → LVGL → radar loop
+├── lgfx_config.h        # LovyanGFX config (RGB / SPI, platform-aware)
+├── radar_ui.h / .cpp    # LVGL canvas-based radar rendering
+├── aircraft_data.h / .cpp   # HTTP fetch + JSON parse
+├── coord_convert.h / .cpp   # Geo → pixel projection
+├── config.h             # WiFi, dump1090 URL, home, display pins & dims (gitignored)
+├── config.example.h     # Template — copy to config.h
+├── land_mask.h          # Generated land/sea mask data
+└── fonts/
+    └── lv_font_monoid_12.c  # Custom bitmap font
 ```
 
 ## First-time setup
 
-> **The Quick Start above is all you need.** The `setup.sh` / `setup.ps1` scripts below are optional — they create symlinks for IDE code intelligence (Go to Definition, etc.). The PlatformIO build uses `radar/extra_src.py` to find shared sources automatically.
-
 ### Windows
 
 ```powershell
-git clone <url> radar
-cd radar
+git clone <url> radar-display
+cd radar-display
 python -m pip install platformio
-.\setup.ps1                     # optional: symlinks for IDE support
-cd radar
 pio run                         # builds S3 firmware
 pio run -e esp32-c6-ili9341     # builds C6 firmware
 pio run --target upload         # builds + flashes S3
@@ -123,11 +114,9 @@ pio run --target upload         # builds + flashes S3
 ### WSL / Linux
 
 ```bash
-git clone <url> radar
-cd radar
+git clone <url> radar-display
+cd radar-display
 pipx install platformio  # or: python3 -m pip install platformio
-./setup.sh                # optional: symlinks for IDE support
-cd radar
 pio run                    # build S3
 pio run -e esp32-c6-ili9341  # build C6
 pio run --target upload    # build + flash S3 (needs USB passthrough on WSL)

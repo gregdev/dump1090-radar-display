@@ -2,25 +2,9 @@
 .pio/
 .pioenvs/
 
-# ── PC simulator build ─────────────────────────────────────
-pc_sim/build/
-pc_sim/_deps/
-
-# ── Symlinks to shared sources (generated during setup) ────
-radar/src/aircraft_data.cpp
-
 # ── User config (copy from config.example.h) ────────────────
 src/config.h
 src/land_mask.h
-radar/src/aircraft_data.h
-radar/src/coord_convert.cpp
-radar/src/coord_convert.h
-radar/src/radar_ui.cpp
-radar/src/radar_ui.h
-radar/src/config.h
-radar/src/land_mask.h
-radar/src/lv_font_monoid_12.c
-radar/src/fonts/
 
 # ── IDE / editor ───────────────────────────────────────────
 .vscode/

@@ -71,6 +71,14 @@ void * radar_ui_setup_touch(void *panel);  /* returns lv_indev_t* for loop feedi
  */
 float radar_ui_get_range(void);
 
+/**
+ * Get / adjust the current backlight brightness (1–100).
+ * Call radar_ui_adjust_brightness() from encoder / external source;
+ * it updates the stored value, applies the change, and persists.
+ */
+int  radar_ui_get_brightness(void);
+void radar_ui_adjust_brightness(int delta);
+
 #ifdef __cplusplus
 }
 #endif
