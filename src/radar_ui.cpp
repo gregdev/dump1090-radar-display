@@ -568,6 +568,7 @@ void radar_ui_init(void) {
     load_settings();
 }
 
+void radar_ui_update_aircraft(const void *aircraft_array, int count) {
     aircraft_t *ac = (aircraft_t*)aircraft_array;
 
     /* cache for tap-to-inspect */
