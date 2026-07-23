@@ -1,14 +1,7 @@
 #include "radar_ui.h"
 #include "aircraft_data.h"
 #include "config.h"
-#if __has_include("land_mask.h")
-  #include "land_mask.h"
-#else
-  #define LAND_MASK_W 1
-  #define LAND_MASK_H 1
-  static const uint8_t land_mask_rgb565[2] = {0,0};
-  #pragma message("land_mask.h not found — land outline disabled")
-#endif
+#include "land_mask.h"
 #include "coord_convert.h"
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -25,16 +18,12 @@
 #ifdef ARDUINO
 #include "lgfx_config.h"
 #include <Preferences.h>
-
-#ifndef RADAR_NO_TOUCH
 #include <Wire.h>
 #include <TAMC_GT911.h>
 static TAMC_GT911 ts(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, SCR_W, SCR_H);
 static volatile bool touch_int_flag = false;
 static void IRAM_ATTR touch_isr() { touch_int_flag = true; }
-#endif
-
-static LGFX *g_lcd = nullptr;  // for backlight callbacks
+static LGFX *g_lcd = nullptr;  // for touch/backlight callbacks
 #else
 class LGFX; /* forward decl for PC sim */
 #endif
@@ -67,8 +56,9 @@ static float  current_range_nm  = RADAR_RANGE_NM;
 static int    current_brightness = 80;     /* 1–100 */
 static bool   show_labels       = true;
 static bool   show_land         = true;
-static bool   show_sweep        = false;  /* hidden in normal op, visible on error */
+static bool   show_sweep        = false;
 static uint8_t *bg_buf   = NULL;
+static uint8_t *back_buf = NULL;
 static int prev_sx[MAX_AIRCRAFT] = {0};
 static int prev_sy[MAX_AIRCRAFT] = {0};
 static bool prev_on[MAX_AIRCRAFT] = {0};
@@ -140,8 +130,7 @@ static int current_theme = 0;  /* 0=green, 1=blue, 2=red, 3=amber */
 #define CLR_MENU_TEXT    (themes[current_theme].menu_text)
 #define CLR_MENU_HEADER  (themes[current_theme].menu_header)
 
-/* ── layout constants (from config.h) ──────────────────── */
-/* SCR_W, SCR_H, SCR_CX, SCR_CY, CIRCLE_R now defined in config.h */
+/* ── layout constants for circular cutout ──────────────── */
 
 /* forward decls */
 static void apply_theme_to_widgets(void);
@@ -195,16 +184,8 @@ static void buf_fill(lv_color_t c) {
     uint32_t pair = ((uint32_t)v << 16) | v;
     uint32_t *dst = (uint32_t*)buf_mem;
     int i;
-    uint32_t t_start = micros();
-    for (i = 0; i < total / 2; i++) {
-        dst[i] = pair;
-        if ((i & 0x3FF) == 0) {   // every 1024 words = 4KB
-            delayMicroseconds(500);  // give PSRAM a real gap between bursts
-        }
-    }
+    for (i = 0; i < total / 2; i++) dst[i] = pair;
     if (total & 1) ((uint16_t*)buf_mem)[total - 1] = v;
-    Serial.printf("  fill done: total=%d t=%lu us\n", i, micros()-t_start);
-    Serial.flush();
 }
 
 /* Bresenham line */
@@ -322,17 +303,28 @@ static void buf_draw_text(int x, int y, const char *s, lv_color_t c) {
     }
 }
 
-/* restore a patch of canvas from the static background buffer */
 static void buf_restore_patch(int ax, int ay) {
-    int px = buf_w/2 + ax;
-    int py = buf_h/2 + ay;
+    int px = buf_w/2 + ax, py = buf_h/2 + ay;
     int x0 = px - 50; if (x0 < 0) x0 = 0;
     int y0 = py - 20; if (y0 < 0) y0 = 0;
     int x1 = px + 50; if (x1 >= buf_w) x1 = buf_w - 1;
     int y1 = py + 20; if (y1 >= buf_h) y1 = buf_h - 1;
     for (int y = y0; y <= y1; y++) {
-        uint16_t *dst = ((uint16_t*)buf_mem) + y * buf_w;
-        uint16_t *src = ((uint16_t*)bg_buf)  + y * buf_w;
+        uint16_t *dst = ((uint16_t*)back_buf) + y * buf_w;
+        uint16_t *src = ((uint16_t*)bg_buf)   + y * buf_w;
+        for (int x = x0; x <= x1; x++) dst[x] = src[x];
+    }
+}
+
+static void buf_flush_patches(int ax, int ay) {
+    int px = buf_w/2 + ax, py = buf_h/2 + ay;
+    int x0 = px - 50; if (x0 < 0) x0 = 0;
+    int y0 = py - 20; if (y0 < 0) y0 = 0;
+    int x1 = px + 50; if (x1 >= buf_w) x1 = buf_w - 1;
+    int y1 = py + 20; if (y1 >= buf_h) y1 = buf_h - 1;
+    for (int y = y0; y <= y1; y++) {
+        uint16_t *dst = ((uint16_t*)buf_mem)  + y * buf_w;
+        uint16_t *src = ((uint16_t*)back_buf) + y * buf_w;
         for (int x = x0; x <= x1; x++) dst[x] = src[x];
     }
 }
@@ -367,16 +359,7 @@ static void radar_draw_land(void) {
 static int cx, cy;   /* canvas centre (set in radar_draw_static) */
 
 static void radar_draw_static(void) {
-    if (!buf_mem) {
-        Serial.println("ERROR: radar_draw_static() called with NULL buf_mem!");
-        return;
-    }
-    Serial.println("static: buf_fill...");
-    Serial.flush();
     buf_fill(CLR_BG);
-    yield();
-    Serial.println("static: fill done");
-    Serial.flush();
 
     cx = buf_w / 2;
     cy = buf_h / 2;
@@ -471,49 +454,22 @@ void radar_ui_init(void) {
 
     /* full-screen canvas for radar graphics */
     radar_canvas = lv_canvas_create(scr);
-    lv_obj_set_size(radar_canvas, SCR_W, SCR_H);
+    lv_obj_set_size(radar_canvas, 480, 480);
     lv_obj_align(radar_canvas, LV_ALIGN_CENTER, 0, 0);
 
     /* allocate draw buffer */
-    buf_w = SCR_W; buf_h = SCR_H;
+    buf_w = 480; buf_h = 480;
     buf_cf = LV_COLOR_FORMAT_RGB565;
     size_t buf_size = LV_CANVAS_BUF_SIZE(buf_w, buf_h,
         LV_COLOR_FORMAT_GET_BPP(buf_cf), LV_DRAW_BUF_STRIDE_ALIGN);
-#ifdef PLATFORM_C6_ILI9341
-    buf_mem = (uint8_t*)malloc(buf_size);
-#else
-    buf_mem = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#endif
-    Serial.printf("Canvas buffer: %p (%d bytes)\n", buf_mem, (int)buf_size);
+    buf_mem = (uint8_t*)lv_malloc(buf_size);
     if (!buf_mem) return;
 
     lv_canvas_set_buffer(radar_canvas, buf_mem, buf_w, buf_h, buf_cf);
-    Serial.println("UI: canvas set, drawing static...");
-    Serial.flush();
-
-    /* Test canvas buffer accessibility */
-    Serial.printf("UI: testing canvas at %p, size=%d\n", buf_mem, buf_size);
-    uint8_t* test = (uint8_t*)buf_mem;
-    test[0] = 0x55;
-    test[1] = 0xAA;
-    test[buf_size-1] = 0x77;
-    Serial.printf("UI: canvas test OK (first=%02x %02x last=%02x)\n",
-        test[0], test[1], test[buf_size-1]);
-
-    // Test 32-bit write
-    uint32_t* t32 = (uint32_t*)buf_mem;
-    Serial.printf("UI: 32-bit test at %p...", t32);
-    t32[0] = 0xDEADBEEF;
-    t32[1] = 0xCAFEBABE;
-    Serial.printf(" OK (val=%08x %08x)\n", t32[0], t32[1]);
-    Serial.flush();
 
     /* draw static elements once */
     radar_draw_static();
-    Serial.println("UI: static drawn");
-    if (!bg_buf) bg_buf = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (bg_buf) { memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2); first_draw = true; }
-    Serial.flush();
+    lv_obj_invalidate(radar_canvas);
 
     /* info labels — placed INSIDE the circular cutout */
     /* bottom-left: 20px above bottom of circle (cy + r - 20) */
@@ -546,8 +502,8 @@ void radar_ui_init(void) {
         lv_obj_set_style_text_font(compass_labels[i], &lv_font_montserrat_14, 0);
 
         float rad = (float)(degs[i] - 90) * (float)M_PI / 180.0f;
-        int lx = SCR_CX + (int)((RADAR_RADIUS_PX - 18) * cosf(rad));
-        int ly = SCR_CY + (int)((RADAR_RADIUS_PX - 18) * sinf(rad));
+        int lx = 240 + (int)((RADAR_RADIUS_PX - 18) * cosf(rad));
+        int ly = 240 + (int)((RADAR_RADIUS_PX - 18) * sinf(rad));
         lv_obj_set_pos(compass_labels[i], lx - 8, ly - 8);
     }
 
@@ -559,9 +515,34 @@ void radar_ui_init(void) {
         lv_obj_set_style_text_font(ac_labels[i], &lv_font_montserrat_14, 0);
     }
 
-    /* ── canvas touch events ──────────────────────────── */
-    /* taps handled directly in indev read callback below —
-       LVGL_CLICKED on canvas is unreliable on some configs */
+    /* ── touch event on canvas for tap & swipe ──────────── */
+    lv_obj_add_event_cb(radar_canvas, [](lv_event_t *e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        lv_indev_t *indev = lv_indev_active();
+        if (!indev) return;
+
+        lv_point_t pt;
+        lv_indev_get_point(indev, &pt);
+
+        if (code == LV_EVENT_PRESSED) {
+            radar_ui_handle_input((int16_t)pt.x, (int16_t)pt.y, true);
+        } else if (code == LV_EVENT_RELEASED) {
+            radar_ui_handle_input((int16_t)pt.x, (int16_t)pt.y, false);
+        }
+    }, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(radar_canvas, [](lv_event_t *e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        lv_indev_t *indev = lv_indev_active();
+        if (!indev) return;
+
+        lv_point_t pt;
+        lv_indev_get_point(indev, &pt);
+
+        if (code == LV_EVENT_RELEASED) {
+            radar_ui_handle_input((int16_t)pt.x, (int16_t)pt.y, false);
+        }
+    }, LV_EVENT_RELEASED, NULL);
+    /* make canvas clickable */
     lv_obj_add_flag(radar_canvas, LV_OBJ_FLAG_CLICKABLE);
 
     /* ── load persisted settings from NVS flash ─────────── */
@@ -570,85 +551,54 @@ void radar_ui_init(void) {
 
 void radar_ui_update_aircraft(const void *aircraft_array, int count) {
     aircraft_t *ac = (aircraft_t*)aircraft_array;
-
-    /* cache for tap-to-inspect */
     cached_aircraft = ac;
-    cached_count    = count;
-
-    /* restore old aircraft positions from static bg */
+    cached_count = count;
     if (!first_draw && bg_buf) {
         for (int i = 0; i < prev_count && i < MAX_AIRCRAFT; i++) {
             if (prev_on[i]) buf_restore_patch(prev_sx[i], prev_sy[i]);
         }
     }
-
-    /* recompute screen positions using current range */
     for (int i = 0; i < count; i++) {
-        int r = geo_to_pixel(ac[i].lat, ac[i].lon,
-                             HOME_LAT, HOME_LON,
+        int r = geo_to_pixel(ac[i].lat, ac[i].lon, HOME_LAT, HOME_LON,
                              current_range_nm, RADAR_RADIUS_PX,
                              &ac[i].screen_x, &ac[i].screen_y);
         ac[i].on_screen = (r == 0) ? 1 : 0;
     }
-
-    /* save previous positions for next restore */
     for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
-        prev_sx[i] = ac[i].screen_x;
-        prev_sy[i] = ac[i].screen_y;
+        prev_sx[i] = ac[i].screen_x; prev_sy[i] = ac[i].screen_y;
         prev_on[i] = ac[i].on_screen;
     }
     for (int i = count; i < MAX_AIRCRAFT; i++) prev_on[i] = false;
     prev_count = count;
-
-    /* first draw or settings change: full redraw + save static bg */
     if (first_draw) {
         radar_draw_static();
         if (bg_buf) memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2);
         first_draw = false;
     }
-
-    /* swap to back buffer for tear-free drawing */
     uint8_t *front = buf_mem;
     if (back_buf) buf_mem = back_buf;
-
-    /* draw only aircraft (and sweep if visible) -- no full redraw */
     radar_draw_aircraft(ac, count);
     if (show_sweep) radar_draw_sweep();
-
-    /* flush modified patches from back to front, then restore pointer */
     if (back_buf) {
         for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
             if (ac[i].on_screen) buf_flush_patches(ac[i].screen_x, ac[i].screen_y);
         }
         buf_mem = front;
     }
-
-    /* Notify LVGL the raw canvas buffer changed and force immediate render */
     lv_draw_buf_t *dbuf = lv_canvas_get_draw_buf(radar_canvas);
     if (dbuf) lv_draw_buf_invalidate_cache(dbuf, NULL);
     lv_obj_invalidate(radar_canvas);
     lv_refr_now(lv_obj_get_display(radar_canvas));
-
-    /* update track count */
     int visible = 0;
     for (int i = 0; i < count; i++) if (ac[i].on_screen) visible++;
     char buf[32];
     snprintf(buf, sizeof(buf), "Tracking %d / %d", visible, count);
     lv_label_set_text(lbl_count, buf);
+}
+
 void radar_ui_sweep_tick(void) {
     sweep_angle += RADAR_SWEEP_SPEED;
     if (sweep_angle >= 360.0f) sweep_angle -= 360.0f;
-}
-
-void radar_ui_redraw(void) {
-    if (!buf_mem || !cached_aircraft) return;
-    radar_draw_static();
-    radar_draw_aircraft(cached_aircraft, cached_count);
-    if (show_sweep) radar_draw_sweep();
-    lv_draw_buf_t *dbuf = lv_canvas_get_draw_buf(radar_canvas);
-    if (dbuf) lv_draw_buf_invalidate_cache(dbuf, NULL);
-    lv_obj_invalidate(radar_canvas);
-    lv_refr_now(lv_obj_get_display(radar_canvas));
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -657,7 +607,7 @@ void radar_ui_redraw(void) {
 
 static void detail_popup_hide(void) {
     if (detail_timer) { lv_timer_del(detail_timer); detail_timer = NULL; }
-    if (detail_popup) { Serial.println("POPUP: hide"); lv_obj_del(detail_popup); detail_popup = NULL; }
+    if (detail_popup) { lv_obj_del(detail_popup); detail_popup = NULL; }
 }
 
 static void detail_popup_auto_hide_cb(lv_timer_t *t) {
@@ -667,7 +617,6 @@ static void detail_popup_auto_hide_cb(lv_timer_t *t) {
 
 static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
     const aircraft_t *ac = &cached_aircraft[ac_idx];
-    Serial.printf("POPUP: show idx=%d flight=%s\n", ac_idx, ac->flight[0] ? ac->flight : ac->hex);
     detail_popup_hide();
 
     /* ── container ─────────────────────────────────── */
@@ -678,7 +627,7 @@ static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
     lv_obj_set_style_border_width(detail_popup, 1, 0);
     lv_obj_set_style_radius(detail_popup, 4, 0);
     lv_obj_set_style_pad_all(detail_popup, 6, 0);
-    lv_obj_set_size(detail_popup, SCR_W * 156 / 480, SCR_H * 74 / 480);
+    lv_obj_set_size(detail_popup, 156, 74);
 
     /* ── text ──────────────────────────────────────── */
     const char *id = ac->flight[0] ? ac->flight : ac->hex;
@@ -710,8 +659,7 @@ static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
     lv_obj_set_style_text_font(label, &lv_font_monoid_12, 0);
 
     /* ── position: near tap but clamp inside circle ─── */
-    const int PW = SCR_W * 156 / 480;
-    const int PH = SCR_H * 74 / 480;
+    const int PW = 156, PH = 74;
     int px = tap_x + 12;
     int py = tap_y - PH / 2;
 
@@ -746,11 +694,10 @@ static void show_detail_popup(int tap_x, int tap_y, int ac_idx) {
  * ═══════════════════════════════════════════════════════════ */
 
 #define MENU_Y_HIDDEN  SCR_H        /* off-screen below */
-#define MENU_H         (CIRCLE_R * 208 / 220)  /* scale with radius */
-#define MENU_Y_VISIBLE (SCR_CY + CIRCLE_R - MENU_H)
-#define MENU_W         (CIRCLE_R * 2 - 16)     /* fits inside circle */
+#define MENU_Y_VISIBLE (SCR_CY + CIRCLE_R - 208)  /* bottom 208px of circle */
+#define MENU_H         208
+#define MENU_W         (CIRCLE_R * 2 - 16)  /* 424 px — fits in circle */
 #define MENU_X         (SCR_CX - MENU_W / 2)
-#define MENU_BTN_W     (MENU_W / 8)            /* range button width */
 
 static void menu_set_range_cb(lv_event_t *e) {
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
@@ -794,10 +741,13 @@ static void menu_set_brightness_cb(lv_event_t *e) {
     save_settings();
 }
 
-/* public API for encoder / external brightness control */
+/* bridge: radar_ui.cpp -> backlight (set from outside) */
+#ifdef ARDUINO
+static void (*backlight_setter)(int percent) = NULL;
 
-/* forward decl — defined in the bridge section below */
-void radar_ui_set_backlight(int percent);
+void radar_ui_set_backlight(int percent) {
+    if (backlight_setter) backlight_setter(percent);
+}
 
 int radar_ui_get_brightness(void) {
     return current_brightness;
@@ -811,14 +761,6 @@ void radar_ui_adjust_brightness(int delta) {
     current_brightness = new_val;
     radar_ui_set_backlight(new_val);
     save_settings();
-}
-
-/* bridge: radar_ui.cpp -> backlight (set from outside) */
-#ifdef ARDUINO
-static void (*backlight_setter)(int percent) = NULL;
-
-void radar_ui_set_backlight(int percent) {
-    if (backlight_setter) backlight_setter(percent);
 }
 #else
 void radar_ui_set_backlight(int percent) {
@@ -844,7 +786,7 @@ static void build_menu_content(lv_obj_t *parent) {
 
     auto mk_btn = [&](const char *txt) -> lv_obj_t* {
         lv_obj_t *b = lv_obj_create(parent);
-        lv_obj_set_size(b, LV_PCT(100), 32);
+        lv_obj_set_size(b, LV_PCT(100), 28);
         lv_obj_set_style_bg_color(b, CLR_RING, 0);
         lv_obj_set_style_border_color(b, CLR_MENU_BORDER, 0);
         lv_obj_set_style_border_width(b, 1, 0);
@@ -861,7 +803,7 @@ static void build_menu_content(lv_obj_t *parent) {
     /* ── RANGE ─────────────────────────────────────── */
     mk_hdr("RANGE  (tap to set)");
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, LV_PCT(100), 32);
+    lv_obj_set_size(row, LV_PCT(100), 28);
     lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
     lv_obj_set_style_border_width(row, 0, 0);
@@ -872,7 +814,7 @@ static void build_menu_content(lv_obj_t *parent) {
     for (int i = 0; i < 4; i++) {
         char rng[8]; snprintf(rng, sizeof(rng), "%d", ranges[i]);
         lv_obj_t *b = lv_obj_create(row);
-        lv_obj_set_size(b, MENU_BTN_W, 28);
+        lv_obj_set_size(b, 54, 24);
         lv_obj_set_style_bg_color(b, CLR_RING, 0);
         lv_obj_set_style_border_color(b, CLR_MENU_BORDER, 0);
         lv_obj_set_style_border_width(b, 1, 0);
@@ -933,7 +875,7 @@ static void build_menu_content(lv_obj_t *parent) {
     static const char *tnames[] = {"Green", "Blue", "Red", "Amber"};
     for (int i = 0; i < 4; i++) {
         lv_obj_t *tb = lv_obj_create(trow);
-        lv_obj_set_size(tb, MENU_BTN_W + 10, 28);
+        lv_obj_set_size(tb, 64, 24);
         lv_obj_set_style_bg_color(tb, themes[i].menu_bg, 0);
         lv_obj_set_style_border_color(tb, themes[i].menu_border, 0);
         lv_obj_set_style_border_width(tb, 1, 0);
@@ -1081,7 +1023,6 @@ static void menu_update_status_text(void) {
 static void show_menu(void) {
     if (menu_visible) return;
     menu_visible = true;
-    Serial.println("MENU: show");
     detail_popup_hide();  /* dismiss popup if open */
 
     if (!menu_panel) {
@@ -1095,8 +1036,7 @@ static void show_menu(void) {
         lv_obj_set_style_radius(menu_panel, 6, 0);
         lv_obj_set_style_pad_all(menu_panel, 4, 0);
 
-        /* scrollable content area — high threshold to avoid
-         * accidental scroll when tapping menu buttons */
+        /* scrollable content area */
         menu_content = lv_obj_create(menu_panel);
         lv_obj_set_size(menu_content, LV_PCT(100), LV_PCT(100));
         lv_obj_set_style_bg_opa(menu_content, LV_OPA_0, 0);
@@ -1104,8 +1044,6 @@ static void show_menu(void) {
         lv_obj_set_style_pad_all(menu_content, 0, 0);
         lv_obj_set_scroll_dir(menu_content, LV_DIR_VER);
         lv_obj_set_scrollbar_mode(menu_content, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_set_scroll_snap_y(menu_content, LV_SCROLL_SNAP_NONE);
-        lv_obj_clear_flag(menu_content, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
         build_menu_content(menu_content);
     }
@@ -1119,7 +1057,6 @@ static void show_menu(void) {
 static void hide_menu(void) {
     if (!menu_visible) return;
     menu_visible = false;
-    Serial.println("MENU: hide");
     if (menu_panel) {
         lv_obj_add_flag(menu_panel, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1130,52 +1067,28 @@ static void hide_menu(void) {
  * ═══════════════════════════════════════════════════════════ */
 
 static void handle_tap(int x, int y) {
-    /* if popup is open, tapping anywhere dismisses it */
-    if (detail_popup) {
-        detail_popup_hide();
-        return;
-    }
-
     /* if menu is open, tapping outside it closes it */
     if (menu_visible) {
+        /* check if tap is on menu panel */
         lv_area_t ma;
         lv_obj_get_coords(menu_panel, &ma);
         if (x < ma.x1 || x > ma.x2 || y < ma.y1 || y > ma.y2) {
             hide_menu();
         }
-        return;  /* taps inside menu handled by LVGL button callbacks */
+        return;  /* don't check aircraft while menu is open */
     }
 
     /* tap outside circle? ignore */
     if (!pt_in_circle(x, y)) return;
 
-    /* ── double-tap on empty area → toggle menu ──────── */
-    static lv_point_t last_pt  = {-999, -999};
-    static uint32_t   last_ms  = 0;
-    uint32_t now = lv_tick_get();
+    /* dismiss any existing popup */
+    detail_popup_hide();
 
-    Serial.printf("  dt=%lu dx=%d dy=%d ac=%d\n",
-                  (unsigned long)(now - last_ms),
-                  abs(x - last_pt.x), abs(y - last_pt.y),
-                  (cached_aircraft && cached_count > 0) ? cached_count : 0);
-
-    if (abs(x - last_pt.x) < 25 && abs(y - last_pt.y) < 25
-        && (now - last_ms) < 400 && last_pt.x != -999)
-    {
-        /* double-tap detected — toggle menu */
-        last_pt.x = -999;  /* reset so triple-tap doesn't toggle again */
-        show_menu();
-        return;
-    }
-    last_pt.x = x;
-    last_pt.y = y;
-    last_ms   = now;
-
-    /* ── single tap: find nearest aircraft ───────────── */
+    /* find nearest aircraft */
     if (!cached_aircraft || cached_count <= 0) return;
 
     int best_idx = -1;
-    int best_dist2 = 484;  /* 22 px hit radius squared */
+    int best_dist2 = 225;  /* 15px hit radius squared */
 
     for (int i = 0; i < cached_count; i++) {
         if (!cached_aircraft[i].on_screen) continue;
@@ -1191,9 +1104,6 @@ static void handle_tap(int x, int y) {
 
     if (best_idx >= 0) {
         show_detail_popup(x, y, best_idx);
-    } else {
-        /* single tap on empty area — do nothing
-           (double-tap will open menu next time) */
     }
 }
 
@@ -1252,25 +1162,37 @@ void radar_ui_update_status(int wifi_rssi, const char *wifi_ip,
  *  Touch Device Setup (called from main after init)
  * ═══════════════════════════════════════════════════════════ */
 
+
+/* ═══════════════════════════════════════════════════════════
+ *  Range Getter (called from main.cpp for coord conversion)
+ * ═══════════════════════════════════════════════════════════ */
+
+float radar_ui_get_range(void) {
+    return current_range_nm;
+}
+
+
+/* ============================================================
+ *  Touch Device Setup (called from main after init)
+ * ============================================================ */
+
 void * radar_ui_setup_touch(void *lcd_ptr) {
     lv_indev_t *indev = nullptr;
 #ifdef ARDUINO
-#ifndef RADAR_NO_TOUCH
     g_lcd = static_cast<LGFX*>(lcd_ptr);
 
-    /* Store backlight control for the brightness slider */
+    /* Store backlight control for brightness slider */
     backlight_setter = [](int percent) {
         if (g_lcd) g_lcd->setBrightness(constrain(percent, 0, 100) * 255 / 100);
     };
 
-    /* Init GT911 via TAMCTec library (no LGFX throttling) */
+    /* Init GT911 via TAMCTec library */
     Wire.begin(TOUCH_SDA, TOUCH_SCL, 400000);
     ts.begin();
     ts.setRotation(ROTATION_NORMAL);
     pinMode(TOUCH_INT, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(TOUCH_INT), touch_isr, FALLING);
-    Serial.println("Touch: interrupt on GPIO 42");
-    Serial.println("Touch: GT911 (TAMCTec) ready");
+    Serial.println("Touch: GT911 ready (GPIO42 interrupt)");
 
     /* Create LVGL input device for touch */
     indev = lv_indev_create();
@@ -1282,48 +1204,33 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
         if (touch_int_flag) {
             ts.read();
             touch_int_flag = false;
-        }
-        if (ts.isTouched && ts.points[0].x > 0 && ts.points[0].y > 0) {
-            int tx = map(ts.points[0].x, SCR_W, 0, 0, SCR_W - 1);
-            int ty = map(ts.points[0].y, SCR_H, 0, 0, SCR_H - 1);
-            data->point.x = tx;
-            data->point.y = ty;
-            data->state   = LV_INDEV_STATE_PRESSED;
-            if (!was_pressed) {
-                Serial.printf("TOUCH: down at %d,%d\n", tx, ty);
-                press_pt.x = tx;
-                press_pt.y = ty;
+
+            if (ts.isTouched && ts.points[0].x > 0 && ts.points[0].y > 0) {
+                int tx = map(ts.points[0].x, SCR_W, 0, 0, SCR_W - 1);
+                int ty = map(ts.points[0].y, SCR_H, 0, 0, SCR_H - 1);
+                data->point.x = tx;
+                data->point.y = ty;
+                data->state = LV_INDEV_STATE_PRESSED;
+                if (!was_pressed) {
+                    Serial.printf("TOUCH: down at %d,%d\n", tx, ty);
+                    press_pt.x = tx;
+                    press_pt.y = ty;
+                }
+                was_pressed = true;
+            } else {
+                if (was_pressed) {
+                    Serial.printf("TAP: %d,%d\n", press_pt.x, press_pt.y);
+                }
+                data->state = LV_INDEV_STATE_RELEASED;
+                was_pressed = false;
             }
-            was_pressed = true;
         } else {
-            if (was_pressed) {
-                Serial.printf("TAP: %d,%d\n", press_pt.x, press_pt.y);
-                handle_tap(press_pt.x, press_pt.y);
-            }
             data->state = LV_INDEV_STATE_RELEASED;
-            was_pressed = false;
         }
     });
-
     Serial.println("Touch: LVGL indev registered");
 #else
-    /* C6 / no-touch: store backlight setter only, no indev */
-    g_lcd = static_cast<LGFX*>(lcd_ptr);
-    backlight_setter = [](int percent) {
-        if (g_lcd) g_lcd->setBrightness(constrain(percent, 0, 100) * 255 / 100);
-    };
     (void)lcd_ptr;
 #endif
-#else
-    (void)lcd_ptr;  /* no-op on PC simulator */
-#endif
     return indev;
-}
-
-/* ═══════════════════════════════════════════════════════════
- *  Range Getter (called from main.cpp for coord conversion)
- * ═══════════════════════════════════════════════════════════ */
-
-float radar_ui_get_range(void) {
-    return current_range_nm;
 }
