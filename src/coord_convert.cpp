@@ -1,18 +1,18 @@
-#include "coord_convert.h"
+﻿#include "coord_convert.h"
 #include <math.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-/* ── helpers ─────────────────────────────────────────────── */
+/* ΓöÇΓöÇ helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 
 static double deg2rad(double d) { return d * M_PI / 180.0; }
 static double rad2deg(double r) { return r * 180.0 / M_PI; }
 
 /* nautical miles per degree of latitude (WGS-84) */
 static double nm_per_deg_lat(double /*lat*/) {
-    /* 1° lat ≈ 60.04 NM (varies only ~0.1% over earth) */
+    /* 1┬░ lat Γëê 60.04 NM (varies only ~0.1% over earth) */
     return 60.04;
 }
 
@@ -21,7 +21,7 @@ static double nm_per_deg_lon(double lat) {
     return 60.04 * cos(deg2rad(lat));
 }
 
-/* ── public API ─────────────────────────────────────────── */
+/* ΓöÇΓöÇ public API ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 
 int geo_to_pixel(double aircraft_lat, double aircraft_lon,
                  double home_lat,   double home_lon,
@@ -37,7 +37,7 @@ int geo_to_pixel(double aircraft_lat, double aircraft_lon,
 
     /* screen coords: x = east, y = north (inverted for screen) */
     int x = (int)( dlon_nm * scale);
-    int y = (int)(-dlat_nm * scale);   /* north = up → negative y */
+    int y = (int)(-dlat_nm * scale);   /* north = up ΓåÆ negative y */
 
     /* distance from centre in pixels */
     float dist_px = sqrtf((float)(x*x + y*y));

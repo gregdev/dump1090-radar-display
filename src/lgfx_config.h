@@ -147,10 +147,7 @@ public:
             cfg.pin_vsync   = GPIO_NUM_17;
             cfg.pin_hsync   = GPIO_NUM_16;
             cfg.pin_pclk    = GPIO_NUM_21;
-            cfg.freq_write  = 3000000;   // TEMP diagnostic: halved from 6MHz to test
-                                          // whether crash is signal-integrity/timing
-                                          // related (jumper-wire setup) vs a hard
-                                          // PSRAM/GDMA arbitration issue.
+            cfg.freq_write  = 6000000;   // 6MHz, original tuned value
 
             cfg.hsync_polarity    = 0;
             cfg.hsync_front_porch = 10;

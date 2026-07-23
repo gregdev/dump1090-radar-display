@@ -4,80 +4,43 @@
 extern "C" {
 #endif
 
-#include "lvgl.h"
-#include <stdbool.h>
 #include <stdint.h>
+#include <stdbool.h>
 
-/**
- * Initialise the radar UI on the active LVGL display.
- * Call once after LVGL + display driver are set up.
- */
+/* ── Radar UI public API ────────────────────────────────── */
+
+/** Initialise LVGL, create the radar canvas + all UI widgets.
+ *  Must be called once after LVGL is initialised. */
 void radar_ui_init(void);
 
-/**
- * Update aircraft positions on the canvas.
- * `aircraft` array of `count` entries; each has screen_x/y pre-computed.
- * Call every DATA_REFRESH_MS.
- */
+/** Register the touch digitizer and create an LVGL input device.
+ *  Returns lv_indev_t* (cast to void* to avoid pulling in lvgl.h). */
+void * radar_ui_setup_touch(void *lcd_ptr);
+
+/** Update aircraft positions and redraw the radar display.
+ *  `aircraft_array` points to an array of `aircraft_t` structs;
+ *  `count` is the number of elements. */
 void radar_ui_update_aircraft(const void *aircraft_array, int count);
 
-/**
- * Advance the sweep-line animation.
- * Call every SWEEP_UPDATE_MS from a timer or the main loop.
- */
-void radar_ui_sweep_tick(void);
-
-/**
- * Redraw the canvas (static bg + cached aircraft + sweep) without
- * recomputing screen positions.  Lightweight, call every sweep tick.
- */
-void radar_ui_redraw(void);
-
-/**
- * Feed raw touch/pointer coordinates to the radar UI for
- * tap-to-inspect and swipe-menu handling.
- *
- * @param x       Screen X coordinate (0–479)
- * @param y       Screen Y coordinate (0–479)
- * @param pressed true = finger down, false = finger up
- */
-void radar_ui_handle_input(int16_t x, int16_t y, bool pressed);
-
-/**
- * Update system status for the hidden status/menu drawer.
- * Call periodically (e.g. every 2 seconds).
- *
- * @param wifi_rssi      WiFi RSSI in dBm (0 if unknown)
- * @param wifi_ip         IP address string ("--" if disconnected)
- * @param wifi_connected  true if WiFi is connected
- * @param total_aircraft  Total aircraft count from dump1090
- * @param feed_ok         true if last fetch succeeded
- */
+/** Update the system-status bar (WiFi RSSI / IP / feed health). */
 void radar_ui_update_status(int wifi_rssi, const char *wifi_ip,
                             bool wifi_connected, int total_aircraft,
                             bool feed_ok);
 
-/**
- * Set up the LVGL touch input device using the ESP_Panel touch driver.
- * Call once after display_init() and lvgl_init().
- *
- * @param panel  Pointer to the initialised ESP_Panel instance.
- */
-void * radar_ui_setup_touch(void *panel);  /* returns lv_indev_t* for loop feeding */
+/** Advance the sweep-line animation by one step. */
+void radar_ui_sweep_tick(void);
 
-/**
- * Get the current radar range in nautical miles (may differ from
- * RADAR_RANGE_NM if the user changed it via the swipe menu).
- */
+/** Force a full redraw of the radar canvas. */
+void radar_ui_redraw(void);
+
+/** Adjust backlight brightness by `delta` (positive = brighter). */
+void radar_ui_adjust_brightness(int delta);
+
+/** Return the current radar range in nautical miles. */
 float radar_ui_get_range(void);
 
-/**
- * Get / adjust the current backlight brightness (1–100).
- * Call radar_ui_adjust_brightness() from encoder / external source;
- * it updates the stored value, applies the change, and persists.
- */
-int  radar_ui_get_brightness(void);
-void radar_ui_adjust_brightness(int delta);
+/** Feed a raw touch event into the radar UI (tap / swipe handling). */
+void radar_ui_handle_input(int16_t x, int16_t y, bool pressed);
 
 #ifdef __cplusplus
 }

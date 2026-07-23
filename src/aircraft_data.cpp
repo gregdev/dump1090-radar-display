@@ -11,7 +11,7 @@
 #include <ArduinoJson.h>
 
 int aircraft_fetch(aircraft_t *aircraft, int max_count) {
-    if (WiFi.status() != WL_CONNECTED) return -1;
+    if (WiFi.status() != WL_CONNECTED) { Serial.println("HTTP: WiFi not connected"); return -1; }
 
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d%s",
@@ -21,7 +21,10 @@ int aircraft_fetch(aircraft_t *aircraft, int max_count) {
     http.begin(url);
     http.setTimeout(3000);
 
+    unsigned long t0 = millis();
     int code = http.GET();
+    unsigned long t1 = millis();
+    Serial.printf("HTTP: GET %s -> %d (%lu ms)\n", url, code, t1 - t0);
     if (code != 200) {
         http.end();
         return -1;
@@ -32,10 +35,10 @@ int aircraft_fetch(aircraft_t *aircraft, int max_count) {
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload);
-    if (err) return -1;
+    if (err) { Serial.printf("JSON: parse error: %s\n", err.c_str()); return -1; }
 
     JsonArray arr = doc["aircraft"].as<JsonArray>();
-    if (!arr) return -1;
+    if (!arr) { Serial.println("JSON: no aircraft array"); return -1; }
 
     int count = 0;
     for (JsonObject a : arr) {

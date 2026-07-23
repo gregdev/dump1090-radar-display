@@ -30,6 +30,8 @@
 #include <Wire.h>
 #include <TAMC_GT911.h>
 static TAMC_GT911 ts(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, SCR_W, SCR_H);
+static volatile bool touch_int_flag = false;
+static void IRAM_ATTR touch_isr() { touch_int_flag = true; }
 #endif
 
 static LGFX *g_lcd = nullptr;  // for backlight callbacks
@@ -66,6 +68,12 @@ static int    current_brightness = 80;     /* 1–100 */
 static bool   show_labels       = true;
 static bool   show_land         = true;
 static bool   show_sweep        = false;  /* hidden in normal op, visible on error */
+static uint8_t *bg_buf   = NULL;
+static int prev_sx[MAX_AIRCRAFT] = {0};
+static int prev_sy[MAX_AIRCRAFT] = {0};
+static bool prev_on[MAX_AIRCRAFT] = {0};
+static int  prev_count = 0;
+static bool first_draw = true;
 
 /* ── cached aircraft for tap-to-inspect ────────────────── */
 static const aircraft_t *cached_aircraft = NULL;
@@ -314,6 +322,21 @@ static void buf_draw_text(int x, int y, const char *s, lv_color_t c) {
     }
 }
 
+/* restore a patch of canvas from the static background buffer */
+static void buf_restore_patch(int ax, int ay) {
+    int px = buf_w/2 + ax;
+    int py = buf_h/2 + ay;
+    int x0 = px - 50; if (x0 < 0) x0 = 0;
+    int y0 = py - 20; if (y0 < 0) y0 = 0;
+    int x1 = px + 50; if (x1 >= buf_w) x1 = buf_w - 1;
+    int y1 = py + 20; if (y1 >= buf_h) y1 = buf_h - 1;
+    for (int y = y0; y <= y1; y++) {
+        uint16_t *dst = ((uint16_t*)buf_mem) + y * buf_w;
+        uint16_t *src = ((uint16_t*)bg_buf)  + y * buf_w;
+        for (int x = x0; x <= x1; x++) dst[x] = src[x];
+    }
+}
+
 /* ── land mask overlay (nearest-neighbour scaled) ──────── */
 static void radar_draw_land(void) {
     /* can't show land at ranges larger than the base mask */
@@ -488,6 +511,8 @@ void radar_ui_init(void) {
     /* draw static elements once */
     radar_draw_static();
     Serial.println("UI: static drawn");
+    if (!bg_buf) bg_buf = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (bg_buf) { memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2); first_draw = true; }
     Serial.flush();
 
     /* info labels — placed INSIDE the circular cutout */
@@ -544,48 +569,33 @@ void radar_ui_init(void) {
 }
 
 void radar_ui_update_aircraft(const void *aircraft_array, int count) {
-    aircraft_t *ac = (aircraft_t*)aircraft_array;  /* we update screen_x/y */
-
-    /* cache for tap-to-inspect */
+    aircraft_t *ac = (aircraft_t*)aircraft_array;
     cached_aircraft = ac;
-    cached_count    = count;
-
-    /* recompute screen positions using current range */
+    cached_count = count;
+    if (!first_draw && bg_buf) {
+        for (int i = 0; i < prev_count && i < MAX_AIRCRAFT; i++) {
+            if (prev_on[i]) buf_restore_patch(prev_sx[i], prev_sy[i]);
+        }
+    }
     for (int i = 0; i < count; i++) {
-        int r = geo_to_pixel(ac[i].lat, ac[i].lon,
-                             HOME_LAT, HOME_LON,
-                             current_range_nm, RADAR_RADIUS_PX,
-                             &ac[i].screen_x, &ac[i].screen_y);
+        int r = geo_to_pixel(ac[i].lat, ac[i].lon, HOME_LAT, HOME_LON, current_range_nm, RADAR_RADIUS_PX, &ac[i].screen_x, &ac[i].screen_y);
         ac[i].on_screen = (r == 0) ? 1 : 0;
     }
-
-    /* redraw only dynamic elements: aircraft + sweep on a fresh buffer */
-    radar_draw_static();
+    for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
+        prev_sx[i] = ac[i].screen_x; prev_sy[i] = ac[i].screen_y; prev_on[i] = ac[i].on_screen;
+    }
+    for (int i = count; i < MAX_AIRCRAFT; i++) prev_on[i] = false;
+    prev_count = count;
+    if (first_draw) { radar_draw_static(); if (bg_buf) memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2); first_draw = false; }
     radar_draw_aircraft(ac, count);
     if (show_sweep) radar_draw_sweep();
-
-    /* Notify LVGL the raw canvas buffer changed and force immediate render */
     lv_draw_buf_t *dbuf = lv_canvas_get_draw_buf(radar_canvas);
     if (dbuf) lv_draw_buf_invalidate_cache(dbuf, NULL);
     lv_obj_invalidate(radar_canvas);
     lv_refr_now(lv_obj_get_display(radar_canvas));
-
-    /* update track count */
     int visible = 0;
     for (int i = 0; i < count; i++) if (ac[i].on_screen) visible++;
-    static bool first_fetch = true;
-    if (first_fetch && count > 0) {
-        first_fetch = false;
-        Serial.printf("Aircraft: %d fetched, %d on-screen\n", count, visible);
-        for (int i = 0; i < count && i < 3; i++) {
-            Serial.printf("  [%d] %s lat=%.4f lon=%.4f sx=%d sy=%d on=%d alt=%d\n",
-                i, ac[i].flight[0] ? ac[i].flight : ac[i].hex,
-                ac[i].lat, ac[i].lon, ac[i].screen_x, ac[i].screen_y,
-                ac[i].on_screen, ac[i].altitude);
-        }
-    }
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Tracking %d / %d", visible, count);
+    char buf[32]; snprintf(buf, sizeof(buf), "Tracking %d / %d", visible, count);
     lv_label_set_text(lbl_count, buf);
 }
 
@@ -1221,6 +1231,9 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
     Wire.begin(TOUCH_SDA, TOUCH_SCL, 400000);
     ts.begin();
     ts.setRotation(ROTATION_NORMAL);
+    pinMode(TOUCH_INT, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(TOUCH_INT), touch_isr, FALLING);
+    Serial.println("Touch: interrupt on GPIO 42");
     Serial.println("Touch: GT911 (TAMCTec) ready");
 
     /* Create LVGL input device for touch */
@@ -1230,7 +1243,10 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
         static bool was_pressed = false;
         static lv_point_t press_pt = {0, 0};
 
-        ts.read();
+        if (touch_int_flag) {
+            ts.read();
+            touch_int_flag = false;
+        }
         if (ts.isTouched && ts.points[0].x > 0 && ts.points[0].y > 0) {
             int tx = map(ts.points[0].x, SCR_W, 0, 0, SCR_W - 1);
             int ty = map(ts.points[0].y, SCR_H, 0, 0, SCR_H - 1);
@@ -1238,6 +1254,7 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
             data->point.y = ty;
             data->state   = LV_INDEV_STATE_PRESSED;
             if (!was_pressed) {
+                Serial.printf("TOUCH: down at %d,%d\n", tx, ty);
                 press_pt.x = tx;
                 press_pt.y = ty;
             }

@@ -2,6 +2,14 @@
 .pio/
 .pioenvs/
 
+# ── pioarduino HybridCompile (custom_sdkconfig) build artifacts ──
+.dummy/
+managed_components/
+dependencies.lock
+sdkconfig.*
+src/CMakeLists.txt
+src/idf_component.yml
+
 # ── User config (copy from config.example.h) ────────────────
 src/config.h
 src/land_mask.h

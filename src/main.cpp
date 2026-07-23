@@ -93,19 +93,23 @@ static bool display_init(void) {
     Serial.println("Display: vsync alive");
 #endif
 
-    lcd.setRotation(0);
+    lcd.setRotation(2);
     lcd.setColorDepth(16);
     lcd.setBrightness(255);
 
     Serial.printf("Display: %dx%d\n", lcd.width(), lcd.height());
 
-    // Skip fillScreen/splash — framebuffer ops on PSRAM may watchdog.
-    // LVGL radar UI will fill the screen on first render.
-    Serial.println("Display: init complete, handing off to LVGL");
-
-    // brief pause so the user sees it before WiFi init
-    delay(800);
-
+    lcd.fillScreen(TFT_BLACK);
+    lcd.setTextDatum(lgfx::v1::textdatum_t::middle_center);
+    lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+    lcd.setTextSize(SPLASH_TITLE_SIZE);
+    lcd.drawString(SPLASH_TITLE, SPLASH_TITLE_X, SPLASH_TITLE_Y);
+    lcd.setTextSize(SPLASH_SUBTITLE_SIZE);
+    lcd.drawString(SPLASH_SUBTITLE, SPLASH_SUBTITLE_X, SPLASH_SUBTITLE_Y);
+    lcd.setTextSize(2);
+    lcd.drawString(SPLASH_VERSION, SPLASH_VERSION_X, SPLASH_VERSION_Y);
+    Serial.println("Display: splash shown");
+    delay(1500);
     return true;
 }
 
@@ -198,9 +202,6 @@ void setup(void) {
     // the one-time expensive full-buffer draw first, with no GDMA
     // running yet, sidesteps that entirely.
     lvgl_init();
-    Serial.printf("HEAP: before radar_ui_init free=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    radar_ui_init();
-
     Serial.printf("HEAP: before display_init free=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     if (!display_init()) {
         Serial.println("Display init failed — halting");
@@ -208,10 +209,12 @@ void setup(void) {
     }
 
     Serial.printf("HEAP: after display_init free=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    Serial.printf("HEAP: before radar_ui_init free=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    radar_ui_init();
 
-    // TEMP: skip WiFi to isolate radar UI crash
-    // wifi_init();
-    Serial.println("WiFi SKIPPED (debug)");
+
+
+    wifi_init();
 
 #ifdef RADAR_NO_TOUCH
     touch_indev = nullptr;

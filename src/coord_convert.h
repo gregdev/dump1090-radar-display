@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,7 +18,7 @@ int geo_to_pixel(double aircraft_lat, double aircraft_lon,
                  int *out_x, int *out_y);
 
 /**
- * Inverse of geo_to_pixel — pixel XY → lat/lon.
+ * Inverse of geo_to_pixel ΓÇö pixel XY ΓåÆ lat/lon.
  * `x` and `y` are relative to canvas centre (like the output of geo_to_pixel).
  */
 void pixel_to_geo(int x, int y,
