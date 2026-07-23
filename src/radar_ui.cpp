@@ -568,37 +568,72 @@ void radar_ui_init(void) {
     load_settings();
 }
 
-void radar_ui_update_aircraft(const void *aircraft_array, int count) {
     aircraft_t *ac = (aircraft_t*)aircraft_array;
+
+    /* cache for tap-to-inspect */
     cached_aircraft = ac;
-    cached_count = count;
+    cached_count    = count;
+
+    /* restore old aircraft positions from static bg */
     if (!first_draw && bg_buf) {
         for (int i = 0; i < prev_count && i < MAX_AIRCRAFT; i++) {
             if (prev_on[i]) buf_restore_patch(prev_sx[i], prev_sy[i]);
         }
     }
+
+    /* recompute screen positions using current range */
     for (int i = 0; i < count; i++) {
-        int r = geo_to_pixel(ac[i].lat, ac[i].lon, HOME_LAT, HOME_LON, current_range_nm, RADAR_RADIUS_PX, &ac[i].screen_x, &ac[i].screen_y);
+        int r = geo_to_pixel(ac[i].lat, ac[i].lon,
+                             HOME_LAT, HOME_LON,
+                             current_range_nm, RADAR_RADIUS_PX,
+                             &ac[i].screen_x, &ac[i].screen_y);
         ac[i].on_screen = (r == 0) ? 1 : 0;
     }
+
+    /* save previous positions for next restore */
     for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
-        prev_sx[i] = ac[i].screen_x; prev_sy[i] = ac[i].screen_y; prev_on[i] = ac[i].on_screen;
+        prev_sx[i] = ac[i].screen_x;
+        prev_sy[i] = ac[i].screen_y;
+        prev_on[i] = ac[i].on_screen;
     }
     for (int i = count; i < MAX_AIRCRAFT; i++) prev_on[i] = false;
     prev_count = count;
-    if (first_draw) { radar_draw_static(); if (bg_buf) memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2); first_draw = false; }
+
+    /* first draw or settings change: full redraw + save static bg */
+    if (first_draw) {
+        radar_draw_static();
+        if (bg_buf) memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2);
+        first_draw = false;
+    }
+
+    /* swap to back buffer for tear-free drawing */
+    uint8_t *front = buf_mem;
+    if (back_buf) buf_mem = back_buf;
+
+    /* draw only aircraft (and sweep if visible) -- no full redraw */
     radar_draw_aircraft(ac, count);
     if (show_sweep) radar_draw_sweep();
+
+    /* flush modified patches from back to front, then restore pointer */
+    if (back_buf) {
+        for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
+            if (ac[i].on_screen) buf_flush_patches(ac[i].screen_x, ac[i].screen_y);
+        }
+        buf_mem = front;
+    }
+
+    /* Notify LVGL the raw canvas buffer changed and force immediate render */
     lv_draw_buf_t *dbuf = lv_canvas_get_draw_buf(radar_canvas);
     if (dbuf) lv_draw_buf_invalidate_cache(dbuf, NULL);
     lv_obj_invalidate(radar_canvas);
     lv_refr_now(lv_obj_get_display(radar_canvas));
+
+    /* update track count */
     int visible = 0;
     for (int i = 0; i < count; i++) if (ac[i].on_screen) visible++;
-    char buf[32]; snprintf(buf, sizeof(buf), "Tracking %d / %d", visible, count);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Tracking %d / %d", visible, count);
     lv_label_set_text(lbl_count, buf);
-}
-
 void radar_ui_sweep_tick(void) {
     sweep_angle += RADAR_SWEEP_SPEED;
     if (sweep_angle >= 360.0f) sweep_angle -= 360.0f;
