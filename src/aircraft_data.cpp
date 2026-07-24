@@ -19,6 +19,7 @@ int aircraft_fetch(aircraft_t *aircraft, int max_count) {
 
     HTTPClient http;
     http.begin(url);
+    http.setConnectTimeout(2000);
     http.setTimeout(3000);
 
     unsigned long t0 = millis();

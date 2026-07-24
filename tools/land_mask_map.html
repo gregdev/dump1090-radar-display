@@ -95,10 +95,11 @@
       let off = 0;
       for (let i = 0; i < pixels.length; i += 4) {
         const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
-        if (r + g + b < 20) {
-          buf[off++] = 0x00; buf[off++] = 0x00;  // water
+        // dark_nolabels: land=#090909 (sum=27), water=#262626 (sum=114)
+        if (r + g + b < 70) {
+          buf[off++] = 0x02; buf[off++] = 0x01;  // land
         } else {
-          buf[off++] = 0x02; buf[off++] = 0x01;  // land (#002210 → RGB565 0x0102, LE bytes)
+          buf[off++] = 0x00; buf[off++] = 0x00;  // water
         }
       }
 

@@ -22,6 +22,7 @@
 #include "radar_ui.h"
 #include "aircraft_data.h"
 #include "coord_convert.h"
+#include "mqtt_manager.h"
 
 /* ── display ────────────────────────────────────────────── */
 static LGFX     lcd;
@@ -127,17 +128,27 @@ static void lvgl_init(void) {
 }
 
 /* ── WiFi init ──────────────────────────────────────────── */
+static bool wifi_first_attempt = true;
+
 static void wifi_init(void) {
+    if (wifi_first_attempt) {
+        WiFi.disconnect(true);   /* wipe saved state on first boot only */
+        WiFi.mode(WIFI_STA);
+        wifi_first_attempt = false;
+    }
+    WiFi.setSleep(false);     /* disable power save — prevents TCP hangs */
+    delay(100);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.print("WiFi connecting");
     int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 40) {
+    while (WiFi.status() != WL_CONNECTED && retries < 60) {
         delay(500);
         Serial.print(".");
         retries++;
     }
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
+        WiFi.setAutoReconnect(true);   /* let ESP handle drops */
     } else {
         Serial.println("\nWiFi FAILED — will retry in loop");
     }
@@ -216,6 +227,11 @@ void setup(void) {
 
     wifi_init();
 
+    /* MQTT — only init if WiFi connected (retries in loop if not) */
+    if (WiFi.status() == WL_CONNECTED) {
+        mqtt_init();
+    }
+
 #ifdef RADAR_NO_TOUCH
     touch_indev = nullptr;
     (void)lcd;  // unused on C6 (backlight set via LGFX directly)
@@ -232,11 +248,17 @@ void setup(void) {
     last_sweep = millis();
 
     Serial.println("Running.");
+
+    /* Signal MQTT task that all init is complete */
+    mqtt_set_ready();
 }
 
 /* ── loop ───────────────────────────────────────────────── */
 void loop(void) {
     unsigned long now = millis();
+
+    // MQTT — process incoming messages + maintain connection
+    mqtt_loop();
 
     // Touch + LVGL — poll every loop (TAMCTec library, no throttling)
 #ifndef RADAR_NO_TOUCH
@@ -269,6 +291,10 @@ void loop(void) {
 
     if (WiFi.status() != WL_CONNECTED) {
         wifi_init();
+        /* WiFi came back — init MQTT if needed */
+        if (WiFi.status() == WL_CONNECTED) {
+            mqtt_init();
+        }
     }
 
     // Data refresh — back off after failures
@@ -292,6 +318,9 @@ void loop(void) {
             WiFi.status() == WL_CONNECTED,
             aircraft_count,
             feed_ok);
+
+        /* publish telemetry sensors to Home Assistant (throttled internally) */
+        mqtt_publish_status(WiFi.RSSI(), aircraft_count, feed_ok);
 
         last_fetch = now;
     }

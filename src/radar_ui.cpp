@@ -3,6 +3,7 @@
 #include "config.h"
 #include "land_mask.h"
 #include "coord_convert.h"
+#include "mqtt_manager.h"
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <string.h>
@@ -174,6 +175,7 @@ static inline lv_color_t buf_get_px(int x, int y) {
 
 /* fast word-level fill for RGB565 (2 bytes/pixel) */
 static void buf_fill(lv_color_t c) {
+    if (!buf_mem) return;
     int total = buf_w * buf_h;
     lv_color16_t c16;
     c16.red   = c.red   >> 3;
@@ -305,10 +307,10 @@ static void buf_draw_text(int x, int y, const char *s, lv_color_t c) {
 
 static void buf_restore_patch(int ax, int ay) {
     int px = buf_w/2 + ax, py = buf_h/2 + ay;
-    int x0 = px - 50; if (x0 < 0) x0 = 0;
-    int y0 = py - 20; if (y0 < 0) y0 = 0;
-    int x1 = px + 50; if (x1 >= buf_w) x1 = buf_w - 1;
-    int y1 = py + 20; if (y1 >= buf_h) y1 = buf_h - 1;
+    int x0 = px - 65; if (x0 < 0) x0 = 0;
+    int y0 = py - 25; if (y0 < 0) y0 = 0;
+    int x1 = px + 65; if (x1 >= buf_w) x1 = buf_w - 1;
+    int y1 = py + 25; if (y1 >= buf_h) y1 = buf_h - 1;
     for (int y = y0; y <= y1; y++) {
         uint16_t *dst = ((uint16_t*)back_buf) + y * buf_w;
         uint16_t *src = ((uint16_t*)bg_buf)   + y * buf_w;
@@ -318,10 +320,10 @@ static void buf_restore_patch(int ax, int ay) {
 
 static void buf_flush_patches(int ax, int ay) {
     int px = buf_w/2 + ax, py = buf_h/2 + ay;
-    int x0 = px - 50; if (x0 < 0) x0 = 0;
-    int y0 = py - 20; if (y0 < 0) y0 = 0;
-    int x1 = px + 50; if (x1 >= buf_w) x1 = buf_w - 1;
-    int y1 = py + 20; if (y1 >= buf_h) y1 = buf_h - 1;
+    int x0 = px - 65; if (x0 < 0) x0 = 0;
+    int y0 = py - 25; if (y0 < 0) y0 = 0;
+    int x1 = px + 65; if (x1 >= buf_w) x1 = buf_w - 1;
+    int y1 = py + 25; if (y1 >= buf_h) y1 = buf_h - 1;
     for (int y = y0; y <= y1; y++) {
         uint16_t *dst = ((uint16_t*)buf_mem)  + y * buf_w;
         uint16_t *src = ((uint16_t*)back_buf) + y * buf_w;
@@ -457,18 +459,35 @@ void radar_ui_init(void) {
     lv_obj_set_size(radar_canvas, 480, 480);
     lv_obj_align(radar_canvas, LV_ALIGN_CENTER, 0, 0);
 
-    /* allocate draw buffer */
+    /* allocate draw buffers — use SPIRAM explicitly */
     buf_w = 480; buf_h = 480;
     buf_cf = LV_COLOR_FORMAT_RGB565;
     size_t buf_size = LV_CANVAS_BUF_SIZE(buf_w, buf_h,
         LV_COLOR_FORMAT_GET_BPP(buf_cf), LV_DRAW_BUF_STRIDE_ALIGN);
-    buf_mem = (uint8_t*)lv_malloc(buf_size);
-    if (!buf_mem) return;
+    Serial.printf("HEAP: before canvas alloc free=%u\n",
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    Serial.printf("CANVAS: need %u bytes\n", (unsigned)buf_size);
+    buf_mem = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    Serial.printf("CANVAS: buf_mem=%p\n", buf_mem);
+    if (!buf_mem) {
+        Serial.println("FATAL: canvas buffer alloc failed");
+        return;
+    }
+
+    /* back buffer for differential updates */
+    back_buf = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    if (back_buf) {
+        bg_buf = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    }
+    Serial.printf("CANVAS: back_buf=%p bg_buf=%p\n", back_buf, bg_buf);
 
     lv_canvas_set_buffer(radar_canvas, buf_mem, buf_w, buf_h, buf_cf);
 
     /* draw static elements once */
     radar_draw_static();
+    if (bg_buf) memcpy(bg_buf, buf_mem, (size_t)buf_w * buf_h * 2);
+    if (back_buf) memcpy(back_buf, buf_mem, (size_t)buf_w * buf_h * 2);
+    first_draw = false;  /* static bg already drawn; skip in update */
     lv_obj_invalidate(radar_canvas);
 
     /* info labels — placed INSIDE the circular cutout */
@@ -580,10 +599,10 @@ void radar_ui_update_aircraft(const void *aircraft_array, int count) {
     radar_draw_aircraft(ac, count);
     if (show_sweep) radar_draw_sweep();
     if (back_buf) {
+        buf_mem = front;  /* flush reads buf_mem as dst, back_buf as src */
         for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
             if (ac[i].on_screen) buf_flush_patches(ac[i].screen_x, ac[i].screen_y);
         }
-        buf_mem = front;
     }
     lv_draw_buf_t *dbuf = lv_canvas_get_draw_buf(radar_canvas);
     if (dbuf) lv_draw_buf_invalidate_cache(dbuf, NULL);
@@ -703,42 +722,27 @@ static void menu_set_range_cb(lv_event_t *e) {
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
     const char *txt = lv_label_get_text(lbl);
-    current_range_nm = (float)atof(txt);
-    /* update range label */
-    char rng[32];
-    snprintf(rng, sizeof(rng), "RNG %.0f NM", (double)current_range_nm);
-    lv_label_set_text(lbl_range, rng);
-
-    /* recompute positions + redraw immediately */
-    if (cached_aircraft && cached_count > 0)
-        radar_ui_update_aircraft(cached_aircraft, cached_count);
-
-    save_settings();
+    radar_ui_set_range((float)atof(txt));
 }
 
 static void menu_toggle_labels_cb(lv_event_t *e) {
-    show_labels = !show_labels;
+    radar_ui_set_labels(!show_labels);
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
     lv_label_set_text(lbl, show_labels ? "Labels: ON " : "Labels: OFF");
-    save_settings();
 }
 
 static void menu_toggle_land_cb(lv_event_t *e) {
-    show_land = !show_land;
+    radar_ui_set_land(!show_land);
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
     lv_label_set_text(lbl, show_land ? "Land: ON " : "Land: OFF");
-    save_settings();
 }
 
 static void menu_set_brightness_cb(lv_event_t *e) {
     lv_obj_t *slider = (lv_obj_t*)lv_event_get_target(e);
     int val = (int)lv_slider_get_value(slider);
-    current_brightness = val;
-    extern void radar_ui_set_backlight(int percent);
-    radar_ui_set_backlight(val);
-    save_settings();
+    radar_ui_set_brightness(val);
 }
 
 /* bridge: radar_ui.cpp -> backlight (set from outside) */
@@ -758,9 +762,7 @@ void radar_ui_adjust_brightness(int delta) {
     if (new_val < 1)  new_val = 1;
     if (new_val > 100) new_val = 100;
     if (new_val == current_brightness) return;
-    current_brightness = new_val;
-    radar_ui_set_backlight(new_val);
-    save_settings();
+    radar_ui_set_brightness(new_val);
 }
 #else
 void radar_ui_set_backlight(int percent) {
@@ -891,20 +893,12 @@ static void build_menu_content(lv_obj_t *parent) {
             lv_obj_t *tgt = (lv_obj_t*)lv_event_get_target(e);
             lv_obj_t *lbl = lv_obj_get_child(tgt, 0);
             const char *name = lv_label_get_text(lbl);
-            if      (strcmp(name, "Green") == 0) current_theme = 0;
-            else if (strcmp(name, "Blue")  == 0) current_theme = 1;
-            else if (strcmp(name, "Red")   == 0) current_theme = 2;
-            else                                 current_theme = 3;
-
-            /* update all LVGL widget styles */
-            apply_theme_to_widgets();
-
-            /* repaint canvas buffer with new theme colours */
-            radar_draw_static();
-            if (cached_aircraft && cached_count > 0)
-                radar_draw_aircraft(cached_aircraft, cached_count);
-            if (show_sweep) radar_draw_sweep();
-            lv_obj_invalidate(radar_canvas);
+            int new_theme;
+            if      (strcmp(name, "Green") == 0) new_theme = 0;
+            else if (strcmp(name, "Blue")  == 0) new_theme = 1;
+            else if (strcmp(name, "Red")   == 0) new_theme = 2;
+            else                                 new_theme = 3;
+            radar_ui_set_theme(new_theme);
 
             /* rebuild menu content with new theme colours */
             if (menu_content) {
@@ -912,7 +906,6 @@ static void build_menu_content(lv_obj_t *parent) {
                 build_menu_content(menu_content);
                 menu_update_status_text();
             }
-            save_settings();
         }, LV_EVENT_CLICKED, NULL);
     }
 
@@ -1233,4 +1226,96 @@ void * radar_ui_setup_touch(void *lcd_ptr) {
     (void)lcd_ptr;
 #endif
     return indev;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  Settings Getters / Setters (used by MQTT + local menu)
+ * ═══════════════════════════════════════════════════════════ */
+
+/* ── getters ────────────────────────────────────────────── */
+
+int radar_ui_get_theme(void) {
+    return current_theme;
+}
+
+/* radar_ui_get_brightness() defined above in #ifdef ARDUINO block */
+
+bool radar_ui_get_show_labels(void) {
+    return show_labels;
+}
+
+bool radar_ui_get_show_land(void) {
+    return show_land;
+}
+
+/* ── setters ────────────────────────────────────────────── */
+
+void radar_ui_set_theme(int theme) {
+    if (theme < 0 || theme >= THEME_COUNT) return;
+    if (theme == current_theme) return;
+    current_theme = theme;
+
+    apply_theme_to_widgets();
+    radar_draw_static();
+    if (cached_aircraft && cached_count > 0)
+        radar_draw_aircraft(cached_aircraft, cached_count);
+    if (show_sweep) radar_draw_sweep();
+    lv_obj_invalidate(radar_canvas);
+
+    save_settings();
+    mqtt_publish_theme(theme);
+}
+
+void radar_ui_set_range(float range_nm) {
+    if (range_nm < 1.0f || range_nm > 200.0f) return;
+    if (range_nm == current_range_nm) return;
+    current_range_nm = range_nm;
+
+    /* update range label */
+    char rng[32];
+    snprintf(rng, sizeof(rng), "RNG %.0f NM", (double)current_range_nm);
+    lv_label_set_text(lbl_range, rng);
+
+    /* recompute positions + redraw via the standard update path */
+    radar_ui_update_aircraft(cached_aircraft, cached_count);
+
+    save_settings();
+    mqtt_publish_range(range_nm);
+}
+
+void radar_ui_set_brightness(int brightness) {
+    if (brightness < 1) brightness = 1;
+    if (brightness > 100) brightness = 100;
+    if (brightness == current_brightness) return;
+    current_brightness = brightness;
+
+    radar_ui_set_backlight(brightness);
+
+    save_settings();
+    mqtt_publish_brightness(brightness);
+}
+
+void radar_ui_set_labels(bool show) {
+    if (show == show_labels) return;
+    show_labels = show;
+
+    /* no immediate redraw needed — next aircraft update picks it up */
+
+    save_settings();
+    mqtt_publish_labels(show);
+}
+
+void radar_ui_set_land(bool show) {
+    if (show == show_land) return;
+    show_land = show;
+
+    /* redraw static layer to add/remove land mask */
+    radar_draw_static();
+    if (cached_aircraft && cached_count > 0)
+        radar_draw_aircraft(cached_aircraft, cached_count);
+    if (show_sweep) radar_draw_sweep();
+    lv_obj_invalidate(radar_canvas);
+
+    save_settings();
+    mqtt_publish_land(show);
 }
